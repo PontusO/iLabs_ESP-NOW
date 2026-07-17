@@ -20,6 +20,12 @@ static ATLink g_link;
 static ESP_NOW_Peer *_peers[ESP_NOW_MAX_TOTAL_PEER_NUM];
 static bool _has_begun = false;
 
+// Negotiated at begin(). File-static like the rest of the module state: the
+// ESP_NOW_Class is a singleton (matching arduino-esp32), so it holds no
+// per-instance data of its own.
+static size_t _max_data_len = 0;
+static uint32_t _version = 0;
+
 static void (*new_cb)(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg) = nullptr;
 static void *new_arg = nullptr;
 
@@ -285,11 +291,20 @@ static void cap_peercount(const char *line, void *arg) {
   }
 }
 
+// Query the co-processor's peer table once (AT+ENLISTPEER?), returning both
+// the total and encrypted counts. Callers that need only one still make a
+// single round-trip. Returns false on link/command error.
+static bool query_peer_counts(PeerCount &pc) {
+  pc.total = 0;
+  pc.enc = 0;
+  return g_link.command("AT+ENLISTPEER?", cap_peercount, &pc) == 0;
+}
+
 /* ---- ESP_NOW_Class ------------------------------------------------- */
 
 ESP_NOW_Class::ESP_NOW_Class() {
-  max_data_len = 0;
-  version = 0;
+  _max_data_len = 0;
+  _version = 0;
 }
 
 ESP_NOW_Class::~ESP_NOW_Class() {}
@@ -402,14 +417,14 @@ bool ESP_NOW_Class::begin(const uint8_t *pmk) {
     }
   }
 
-  version = 1;
+  _version = 1;
   VerCap v = {0, false};
   g_link.command("AT+ENVER?", cap_ver, &v);
   if (v.got && v.espnow_ver) {
-    version = v.espnow_ver;
+    _version = v.espnow_ver;
   }
   // Single-frame AT payload cap; matches ESP-NOW v1 (ESP_NOW_MAX_DATA_LEN).
-  max_data_len = ESP_NOW_MAX_DATA_LEN;
+  _max_data_len = ESP_NOW_MAX_DATA_LEN;
 
   _has_begun = true;
   return true;
@@ -435,8 +450,8 @@ int ESP_NOW_Class::getTotalPeerCount() const {
     log_e("ESP-NOW not initialized");
     return -1;
   }
-  PeerCount pc = {0, 0};
-  if (g_link.command("AT+ENLISTPEER?", cap_peercount, &pc) != 0) {
+  PeerCount pc;
+  if (!query_peer_counts(pc)) {
     return -1;
   }
   return pc.total;
@@ -447,27 +462,27 @@ int ESP_NOW_Class::getEncryptedPeerCount() const {
     log_e("ESP-NOW not initialized");
     return -1;
   }
-  PeerCount pc = {0, 0};
-  if (g_link.command("AT+ENLISTPEER?", cap_peercount, &pc) != 0) {
+  PeerCount pc;
+  if (!query_peer_counts(pc)) {
     return -1;
   }
   return pc.enc;
 }
 
 int ESP_NOW_Class::getMaxDataLen() const {
-  if (max_data_len == 0) {
+  if (_max_data_len == 0) {
     log_e("ESP-NOW not initialized. Call begin() first.");
     return -1;
   }
-  return max_data_len;
+  return _max_data_len;
 }
 
 int ESP_NOW_Class::getVersion() const {
-  if (version == 0) {
+  if (_version == 0) {
     log_e("ESP-NOW not initialized. Call begin() first.");
     return -1;
   }
-  return version;
+  return _version;
 }
 
 int ESP_NOW_Class::availableForWrite() {
