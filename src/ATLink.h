@@ -34,6 +34,12 @@
 #define ILABS_ESPNOW_READY_TIMEOUT_MS 3000
 #endif
 
+/* Max AT commands that may be queued from within receive callbacks before
+ * the transport unwinds and runs them (reentrancy safety). */
+#ifndef ILABS_ESPNOW_DEFER_MAX
+#define ILABS_ESPNOW_DEFER_MAX 8
+#endif
+
 class ATLink {
 public:
   typedef void (*LineCb)(const char *line, void *arg);
@@ -61,6 +67,12 @@ public:
    *         >0  the +ENERR:<n> code on a coded error,
    *         -1  on plain ERROR,
    *         -2  on timeout / link not started.
+   *
+   * Reentrancy: if called from within a URC callback (i.e. while the transport
+   * is dispatching a received line), the command is queued and executed after
+   * the dispatch unwinds, and this returns 0 (optimistic). Callbacks should
+   * therefore only issue fire-and-forget commands (send/add/remove/setKey),
+   * not queries whose result they need synchronously.
    */
   int command(const char *cmd, LineCb onLine = nullptr, void *arg = nullptr, uint32_t timeout_ms = 0);
 
@@ -84,11 +96,22 @@ public:
 
 private:
   const char *readLine(uint32_t timeout_ms);
+
+  // The actual command execution (write + wait for terminal response).
+  int runCommand(const char *cmd, LineCb onLine, void *arg, uint32_t timeout_ms);
+
+  // Run a URC callback with the dispatch-depth guard raised, so any command()
+  // the callback issues is deferred rather than run reentrantly.
   void dispatchURC(const char *line) {
     if (_urc_cb) {
+      _dispatch_depth++;
       _urc_cb(line, _urc_arg);
+      _dispatch_depth--;
     }
   }
+
+  void deferCommand(const char *cmd);
+  void drainDeferred();
 
   Stream *_s;
   uint8_t _chan;
@@ -100,4 +123,13 @@ private:
 
   LineCb _urc_cb;
   void *_urc_arg;
+
+  int _dispatch_depth;  // >0 while running a URC callback
+  bool _draining;       // guards drainDeferred() against re-entry
+
+  // FIFO of commands deferred from callbacks (heap copies, run FIFO).
+  char *_deferred[ILABS_ESPNOW_DEFER_MAX];
+  int _defer_head;
+  int _defer_tail;
+  int _defer_count;
 };

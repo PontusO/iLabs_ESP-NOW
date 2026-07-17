@@ -195,4 +195,10 @@ ESP-NOW v2 (>250 B) framing.
 transparently fragmented by the firmware.
 
 Callbacks run in the context of whoever calls `poll()` (or the sending call),
-not a background task — keep them short, as with the ESP32 library.
+not a background task — keep them short, as with the ESP32 library. You may
+call library methods (`peer.send()`, `add()`, `setKey()`, `ESP_NOW.write()`,
+…) from inside `onReceive()` / `onSent()` / `onNewPeer()`: those calls would
+otherwise re-enter the single AT transport, so the library **defers them and
+runs them in order once the callback returns**. Because of that, a command
+issued from a callback returns optimistically (it hasn't run yet), so don't
+issue *queries* whose result you need synchronously from within a callback.

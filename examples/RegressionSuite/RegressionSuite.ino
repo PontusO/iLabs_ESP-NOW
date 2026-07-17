@@ -106,7 +106,6 @@ TesterPeer *g_tp = nullptr;
 /* ---- RESPONDER: echo + control server ------------------------------ */
 
 uint32_t g_resp_last_rx = 0;
-volatile int g_switch = 0;  // deferred re-key request: 1 = encrypt, -1 = plain
 
 class RespPeer : public ESP_NOW_Peer {
 public:
@@ -129,10 +128,11 @@ public:
       reply[1] = ACK_BYTE;
       send(reply, 2);
     } else if (op == OP_ENCRYPT || op == OP_PLAIN) {
-      // Re-keying re-enters the AT transport (AT+ENADDPEER). Doing that from
-      // inside this callback (which runs within poll()) is reentrant, so defer
-      // it to loop(). No ack: the tester waits a fixed window instead.
-      g_switch = (op == OP_ENCRYPT) ? 1 : -1;
+      // Re-key our side of the link straight from the callback. setKey() issues
+      // AT+ENADDPEER, i.e. it re-enters the AT transport - the library defers
+      // that safely because we're inside a receive callback. (No ack: the
+      // tester waits a fixed window instead.)
+      setKey(op == OP_ENCRYPT ? SHARED_LMK : nullptr);
     }
   }
 
@@ -385,12 +385,6 @@ void setup() {
 
 void loop() {
   ESP_NOW.poll();
-
-  // Apply a deferred re-key request outside the receive callback.
-  if (g_switch != 0 && g_tester_peer) {
-    g_tester_peer->setKey(g_switch > 0 ? SHARED_LMK : nullptr);
-    g_switch = 0;
-  }
 
   if (g_role == ROLE_RESPONDER && g_tester_peer && millis() - g_resp_last_rx > RESP_IDLE_DROP_MS) {
     // Tester went quiet (finished, reset, or crashed) - forget it so a fresh
