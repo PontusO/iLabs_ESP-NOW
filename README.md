@@ -37,11 +37,13 @@ written. Because the radio is a co-processor over UART rather than on-chip,
    ```cpp
    ESP_NOW.setLink(CH);   // opens the variant's ESP UART + resets the ESP32
    ```
-2. **Servicing receives.** Call `ESP_NOW.poll()` regularly from `loop()` (like
-   `PubSubClient.loop()` / `ArduinoOTA.handle()`). Received frames are
-   dispatched to peer `onReceive()` / `onNewPeer()` from inside `poll()`.
-   On RP2040 `delay()` does not yield, so don't sit in a bare `delay()` — the
-   examples wrap their waits in a poll loop.
+2. **Servicing receives.** Call `ESP_NOW.poll()` once per `loop()` iteration
+   (like `PubSubClient.loop()` / `ArduinoOTA.handle()`); received frames are
+   dispatched to peer `onReceive()` / `onNewPeer()` from inside it. Keep
+   `loop()` non-blocking — on RP2040 `delay()` does not yield, so a bare
+   `delay()` stalls the receive path. For periodic work, drive it off a timer
+   instead of blocking: the examples use `add_repeating_timer_ms()` to flag a
+   send, and `loop()` just polls and fires the send when the flag is set.
 
 `WiFi.macAddress()` maps to `ESP_NOW.macAddress()` (the co-processor's STA MAC).
 

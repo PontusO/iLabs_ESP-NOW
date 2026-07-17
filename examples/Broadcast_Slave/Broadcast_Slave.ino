@@ -103,6 +103,6 @@ void setup() {
 
 void loop() {
   // Service the link: inbound frames are dispatched to onReceive()/onNewPeer().
+  // Nothing else to do here - just keep polling, never blocking.
   ESP_NOW.poll();
-  delay(1);
 }

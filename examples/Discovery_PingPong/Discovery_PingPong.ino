@@ -16,6 +16,7 @@
 
 #define ESPNOW_WIFI_CHANNEL 6
 #define MAX_FOUND           8
+#define SEND_INTERVAL_MS    1000
 
 class Peer : public ESP_NOW_Peer {
 public:
@@ -37,6 +38,17 @@ public:
 
 Peer *peer = nullptr;
 uint32_t seq = 0;
+
+// Repeating timer -> "send is due" flag (set in timer/alarm context; the
+// actual send runs in loop(), never inside an ISR).
+volatile bool send_due = false;
+repeating_timer_t send_timer;
+
+bool onSendTimer(repeating_timer_t *rt) {
+  (void)rt;
+  send_due = true;
+  return true;  // keep repeating
+}
 
 void setup() {
   Serial.begin(115200);
@@ -80,16 +92,19 @@ void setup() {
     }
   }
   Serial.println("Paired. Starting ping...");
+
+  // Fire a send every SEND_INTERVAL_MS via a repeating timer.
+  add_repeating_timer_ms(SEND_INTERVAL_MS, onSendTimer, nullptr, &send_timer);
 }
 
 void loop() {
-  char msg[24];
-  int n = snprintf(msg, sizeof(msg), "ping %lu", (unsigned long)seq++);
-  peer->send((const uint8_t *)msg, n);
+  // Service the link every iteration - never blocks.
+  ESP_NOW.poll();
 
-  // Wait 2 s while servicing replies and the send-status URC.
-  for (uint32_t t = millis(); millis() - t < 2000;) {
-    ESP_NOW.poll();
-    delay(5);
+  if (send_due && peer) {
+    send_due = false;
+    char msg[24];
+    int n = snprintf(msg, sizeof(msg), "ping %lu", (unsigned long)seq++);
+    peer->send((const uint8_t *)msg, n);
   }
 }

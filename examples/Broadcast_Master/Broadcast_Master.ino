@@ -16,6 +16,7 @@
 /* Definitions */
 
 #define ESPNOW_WIFI_CHANNEL 6
+#define BROADCAST_INTERVAL_MS 5000
 
 /* Classes */
 
@@ -55,6 +56,17 @@ uint32_t msg_count = 0;
 // Create a broadcast peer object
 ESP_NOW_Broadcast_Peer broadcast_peer(ESPNOW_WIFI_CHANNEL, WIFI_IF_STA, nullptr);
 
+// Repeating timer -> "broadcast is due" flag (set in timer/alarm context; the
+// actual send runs in loop(), never inside an ISR).
+volatile bool send_due = false;
+repeating_timer_t send_timer;
+
+bool onSendTimer(repeating_timer_t *rt) {
+  (void)rt;
+  send_due = true;
+  return true;  // keep repeating
+}
+
 /* Main */
 
 void setup() {
@@ -79,22 +91,23 @@ void setup() {
 
   Serial.printf("ESP-NOW version: %d, max data length: %d\n", ESP_NOW.getVersion(), ESP_NOW.getMaxDataLen());
   Serial.println("Setup complete. Broadcasting messages every 5 seconds.");
+
+  // Broadcast on a repeating timer instead of blocking in loop().
+  add_repeating_timer_ms(BROADCAST_INTERVAL_MS, onSendTimer, nullptr, &send_timer);
 }
 
 void loop() {
-  // Broadcast a message to all devices within the network
-  char data[32];
-  snprintf(data, sizeof(data), "Hello, World! #%lu", (unsigned long)msg_count++);
+  // Service the link every iteration so send-status and inbound frames
+  // dispatch promptly - never blocks.
+  ESP_NOW.poll();
 
-  Serial.printf("Broadcasting message: %s\n", data);
-
-  if (!broadcast_peer.send_message((uint8_t *)data, sizeof(data))) {
-    Serial.println("Failed to broadcast message");
-  }
-
-  // Wait 5 s, servicing the link so send-status and inbound frames dispatch.
-  for (uint32_t t = millis(); millis() - t < 5000;) {
-    ESP_NOW.poll();
-    delay(10);
+  if (send_due) {
+    send_due = false;
+    char data[32];
+    snprintf(data, sizeof(data), "Hello, World! #%lu", (unsigned long)msg_count++);
+    Serial.printf("Broadcasting message: %s\n", data);
+    if (!broadcast_peer.send_message((uint8_t *)data, sizeof(data))) {
+      Serial.println("Failed to broadcast message");
+    }
   }
 }
