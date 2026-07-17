@@ -23,6 +23,12 @@ static bool _has_begun = false;
 static void (*new_cb)(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg) = nullptr;
 static void *new_arg = nullptr;
 
+// Set when the co-processor's +ENREADY is seen during operation (unexpected
+// reboot). Not set for the boot +ENREADY consumed by setLink()'s waitReady().
+static volatile bool _link_reset_flag = false;
+static void (*reset_cb)(void *arg) = nullptr;
+static void *reset_arg = nullptr;
+
 /* ---- small helpers ------------------------------------------------- */
 
 static const char HEXD[] = "0123456789ABCDEF";
@@ -174,7 +180,16 @@ static void urc_handler(const char *line, void *arg) {
     return;
   }
 
-  // +ENFRAGRECV (progress) and +ENREADY are informational; ignored here.
+  if (strncmp(line, "+ENREADY", 8) == 0) {
+    // The co-processor rebooted mid-operation: it has lost its peers/keys.
+    _link_reset_flag = true;
+    if (reset_cb) {
+      reset_cb(reset_arg);
+    }
+    return;
+  }
+
+  // +ENFRAGRECV (progress) is informational; ignored here.
 }
 
 /* ---- query-result capture callbacks -------------------------------- */
@@ -234,10 +249,44 @@ ESP_NOW_Class::~ESP_NOW_Class() {}
 void ESP_NOW_Class::setLink(Stream &serial, uint8_t channel) {
   g_link.begin(serial, channel);
   g_link.onURC(urc_handler, nullptr);
+
+#if defined(PIN_ESP_MODE) && defined(PIN_ESP_RST)
+  // Fully automatic ESP32 hardware reset into run mode, using the pins the
+  // arduino-pico board variant defines. Gives a deterministic clean boot on
+  // every host start (any peers/keys/baud from a prior run are cleared), and
+  // syncs the host on the firmware's +ENREADY, discarding ROM boot chatter.
+  pinMode(PIN_ESP_MODE, OUTPUT);
+  digitalWrite(PIN_ESP_MODE, HIGH);  // run mode (not serial-download)
+  pinMode(PIN_ESP_RST, OUTPUT);
+  digitalWrite(PIN_ESP_RST, LOW);    // assert reset
+  delay(5);
+  g_link.flushInput();               // drop any pre-reset noise
+  digitalWrite(PIN_ESP_RST, HIGH);   // release -> ESP32 boots
+  g_link.waitReady(ILABS_ESPNOW_READY_TIMEOUT_MS);
+  _link_reset_flag = false;          // the boot +ENREADY is expected, not a fault
+#endif
 }
+
+#ifdef ESP_SERIAL_PORT
+void ESP_NOW_Class::setLink(uint8_t channel) {
+  ESP_SERIAL_PORT.begin(ILABS_ESPNOW_LINK_BAUD);
+  setLink(ESP_SERIAL_PORT, channel);
+}
+#endif
 
 void ESP_NOW_Class::poll() {
   g_link.poll();
+}
+
+void ESP_NOW_Class::onReset(void (*cb)(void *arg), void *arg) {
+  reset_cb = cb;
+  reset_arg = arg;
+}
+
+bool ESP_NOW_Class::wasReset() {
+  bool r = _link_reset_flag;
+  _link_reset_flag = false;
+  return r;
 }
 
 String ESP_NOW_Class::macAddress() {
@@ -259,6 +308,11 @@ bool ESP_NOW_Class::begin(const uint8_t *pmk) {
 
   // Quiet echo so responses parse cleanly (ignore result: ATE0 always OKs).
   g_link.command("ATE0");
+
+  // Clean slate: drop any state left from a previous host session. Harmless
+  // no-op right after setLink()'s hardware reset; on boards without the reset
+  // pins it clears stale peers/keys so begin() always starts fresh.
+  g_link.command("AT+ENDEINIT");
 
   char cmd[64];
   snprintf(cmd, sizeof(cmd), "AT+ENINIT=%u", (unsigned)g_link.channel());

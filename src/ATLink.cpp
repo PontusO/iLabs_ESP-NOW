@@ -123,3 +123,28 @@ void ATLink::poll() {
     // ignore stray OK/ERROR/result lines outside a command
   }
 }
+
+void ATLink::flushInput() {
+  if (_s) {
+    while (_s->available() > 0) {
+      _s->read();
+    }
+  }
+  _acc_len = 0;
+  _overflow = false;
+}
+
+bool ATLink::waitReady(uint32_t timeout_ms) {
+  uint32_t start = millis();
+  for (;;) {
+    uint32_t elapsed = millis() - start;
+    if (elapsed >= timeout_ms) {
+      return false;
+    }
+    const char *line = readLine(timeout_ms - elapsed);
+    if (line && strncmp(line, "+ENREADY", 8) == 0) {
+      return true;
+    }
+    // discard boot ROM chatter / stray lines and keep waiting
+  }
+}

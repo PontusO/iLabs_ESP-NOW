@@ -17,8 +17,6 @@
 /* Definitions */
 
 #define ESPNOW_WIFI_CHANNEL 6
-#define ESPNOW_LINK         Serial1     // UART to the ESP32-C6 AT interpreter
-#define ESPNOW_LINK_BAUD    115200
 
 /* Classes */
 
@@ -81,8 +79,13 @@ void setup() {
   Serial.begin(115200);
 
   // Bring up the link to the ESP32-C6 co-processor.
-  ESPNOW_LINK.begin(ESPNOW_LINK_BAUD);
-  ESP_NOW.setLink(ESPNOW_LINK, ESPNOW_WIFI_CHANNEL);
+#if defined(ESP_SERIAL_PORT)
+  // iLabs Challenger boards: use the variant's ESP32 UART + automatic reset.
+  ESP_NOW.setLink(ESPNOW_WIFI_CHANNEL);
+#else
+  Serial1.begin(115200);
+  ESP_NOW.setLink(Serial1, ESPNOW_WIFI_CHANNEL);
+#endif
 
   Serial.println("ESP-NOW Example - Broadcast Slave");
   Serial.println("  MAC Address: " + ESP_NOW.macAddress());

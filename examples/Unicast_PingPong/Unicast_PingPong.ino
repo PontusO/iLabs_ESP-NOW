@@ -11,8 +11,6 @@
 #include "ESP32_NOW.h"
 
 #define ESPNOW_WIFI_CHANNEL 6
-#define ESPNOW_LINK         Serial1
-#define ESPNOW_LINK_BAUD    115200
 
 // The OTHER board's ESP32-C6 STA MAC. Change this per board.
 uint8_t PEER_MAC[6] = {0xF0, 0xF5, 0xBD, 0x31, 0x9B, 0xB0};
@@ -42,8 +40,13 @@ uint32_t seq = 0;
 void setup() {
   Serial.begin(115200);
 
-  ESPNOW_LINK.begin(ESPNOW_LINK_BAUD);
-  ESP_NOW.setLink(ESPNOW_LINK, ESPNOW_WIFI_CHANNEL);
+#if defined(ESP_SERIAL_PORT)
+  // iLabs Challenger boards: use the variant's ESP32 UART + automatic reset.
+  ESP_NOW.setLink(ESPNOW_WIFI_CHANNEL);
+#else
+  Serial1.begin(115200);
+  ESP_NOW.setLink(Serial1, ESPNOW_WIFI_CHANNEL);
+#endif
 
   if (!ESP_NOW.begin() || !peer.add()) {
     Serial.println("ESP-NOW init / peer add failed");

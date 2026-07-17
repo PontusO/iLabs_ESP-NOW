@@ -37,6 +37,12 @@ written. Because the radio is a co-processor over UART rather than on-chip,
    Serial1.begin(115200);
    ESP_NOW.setLink(Serial1, CH);
    ```
+   On an **iLabs Challenger board** the variant already knows which UART the
+   ESP32 is on (`ESP_SERIAL_PORT`) and where its reset pins are, so there's a
+   fully automatic overload — just pass the channel:
+   ```cpp
+   ESP_NOW.setLink(CH);   // opens the variant's ESP UART for you
+   ```
 2. **Servicing receives.** Call `ESP_NOW.poll()` regularly from `loop()` (like
    `PubSubClient.loop()` / `ArduinoOTA.handle()`). Received frames are
    dispatched to peer `onReceive()` / `onNewPeer()` from inside `poll()`.
@@ -44,6 +50,30 @@ written. Because the radio is a co-processor over UART rather than on-chip,
    examples wrap their waits in a poll loop.
 
 `WiFi.macAddress()` maps to `ESP_NOW.macAddress()` (the co-processor's STA MAC).
+
+## Board reset handling
+
+On boards whose variant defines the ESP32 reset pins (`PIN_ESP_MODE` /
+`PIN_ESP_RST` — all the iLabs Challenger WiFi/WiFi6 boards), `setLink()`
+**automatically hardware-resets the ESP32 into run mode and waits for its
+`+ENREADY`** before returning. So every time the host boots (power-on or
+reset), the co-processor gets a clean, deterministic cold start — no stale
+peers, keys, or baud left over from a previous session, and the boot-ROM
+chatter is discarded for you. On boards without those pins, `setLink()` just
+binds the UART and `begin()` issues an `AT+ENDEINIT` first to clear prior
+state as best it can (a divergent link baud from a prior run still needs a
+physical reset).
+
+If the ESP32 reboots *unexpectedly* while running (brownout, manual reset),
+it emits `+ENREADY`; the library flags it. Register a handler to react:
+
+```cpp
+ESP_NOW.onReset([](void *) {
+  // The ESP32 lost its peers and keys. Simplest recovery: full clean cycle.
+  rp2040.reboot();
+}, nullptr);
+// ...or poll ESP_NOW.wasReset() from loop().
+```
 
 ## Hardware / wiring
 
@@ -53,8 +83,12 @@ written. Because the radio is a co-processor over UART rather than on-chip,
   plus GND. 115200 8N1 by default. Optionally wire RTS/CTS and enable flow
   control on the ESP32 (`AT+ENFLOW`) for high-throughput bursts.
 
-Pick the host UART with `ESP_NOW.setLink(<Serial>, <channel>)`. Any
-`HardwareSerial` works; the examples use `Serial1`.
+Pick the host UART with `ESP_NOW.setLink(<Serial>, <channel>)`; any
+`HardwareSerial` works. On iLabs Challenger boards the UART and the ESP32
+reset pins are wired on-board and known to the variant, so `ESP_NOW.setLink(<channel>)`
+handles everything (see [Board reset handling](#board-reset-handling)). The
+examples auto-select: the variant path on Challenger boards, `Serial1`
+otherwise.
 
 ## Install
 

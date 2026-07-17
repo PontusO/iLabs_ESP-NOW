@@ -29,6 +29,11 @@
 #define ILABS_ESPNOW_CMD_TIMEOUT_MS 1500
 #endif
 
+/* Max wait for the co-processor's +ENREADY after a hardware reset (ms). */
+#ifndef ILABS_ESPNOW_READY_TIMEOUT_MS
+#define ILABS_ESPNOW_READY_TIMEOUT_MS 3000
+#endif
+
 class ATLink {
 public:
   typedef void (*LineCb)(const char *line, void *arg);
@@ -61,6 +66,13 @@ public:
 
   /* Non-blocking: read and dispatch any pending asynchronous URC lines. */
   void poll();
+
+  /* Drain any buffered input and reset the line assembler. */
+  void flushInput();
+
+  /* Block until the firmware's +ENREADY boot marker, discarding everything
+   * else (e.g. ROM boot chatter). Returns false on timeout. */
+  bool waitReady(uint32_t timeout_ms);
 
   /* Register the asynchronous-URC handler (installed by the ESP_NOW layer). */
   void onURC(LineCb cb, void *arg) {

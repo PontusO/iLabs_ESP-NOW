@@ -28,6 +28,12 @@
 }
 // clang-format on
 
+/* Default baud for the AT link. Matches the AT firmware's boot baud
+ * (EN_UART_BAUD). Used by the auto setLink(channel) overload. */
+#ifndef ILABS_ESPNOW_LINK_BAUD
+#define ILABS_ESPNOW_LINK_BAUD 115200
+#endif
+
 class ESP_NOW_Peer;  //forward declaration for friend function
 
 class ESP_NOW_Class : public Print {
@@ -59,10 +65,21 @@ public:
   /* ---- iLabs host-bridge extensions (not in the ESP32-native API) ---- *
    * Additive only, so upstream sketches remain source-compatible.        */
 
-  // Bind the AT link to the ESP32 co-processor and pick the ESP-NOW
-  // channel. Call once in setup() before begin(). `serial` must already be
-  // begin()'d by the sketch. Replaces the ESP32 WiFi.mode()/setChannel().
+  // Bind the AT link to the ESP32 co-processor and pick the ESP-NOW channel.
+  // Call once in setup() before begin(); replaces the ESP32 WiFi bring-up.
+  // `serial` must already be begin()'d by the sketch.
+  //
+  // On iLabs Challenger boards (whose variant defines PIN_ESP_MODE/PIN_ESP_RST)
+  // this also performs an automatic hardware reset of the ESP32 into run mode
+  // and waits for its +ENREADY, giving a deterministic clean boot every time.
   void setLink(Stream &serial, uint8_t channel);
+
+#ifdef ESP_SERIAL_PORT
+  // Fully automatic overload for boards whose variant wires the ESP32 to a
+  // known UART (ESP_SERIAL_PORT): opens that port and binds it. Just pass the
+  // channel. Available only when the board variant defines ESP_SERIAL_PORT.
+  void setLink(uint8_t channel);
+#endif
 
   // Pump the AT link: read and dispatch pending +ENRECV / send-status URCs.
   // Call frequently from loop() (received frames arrive via peer onReceive).
@@ -71,6 +88,15 @@ public:
   // This device's (the ESP32 co-processor's) STA MAC, "AABBCCDDEEFF".
   // Valid after setLink(); works before begin().
   String macAddress();
+
+  // Register a callback fired when the co-processor unexpectedly reboots (its
+  // +ENREADY boot marker is seen during operation). The ESP32 loses its peers
+  // and keys on reset; the simplest recovery is to reboot the host
+  // (rp2040.reboot()), which re-runs the hardware reset + provisioning.
+  void onReset(void (*cb)(void *arg), void *arg = nullptr);
+
+  // True (once) if the co-processor rebooted since the last call; clears on read.
+  bool wasReset();
 
 protected:
   size_t max_data_len;
