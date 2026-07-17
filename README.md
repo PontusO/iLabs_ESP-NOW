@@ -12,7 +12,7 @@ bring-up changed.
    RP2040 / RP2350 host              ESP32-C6 slave
   (this Arduino library)          (AT+EN interpreter)
         |                                  |
-        |  UART  (Serial1, AT+EN)          |
+        |  UART  (ESP_SERIAL_PORT, AT+EN)  |
         | ESP_NOW.begin() --> AT+ENINIT -->|            ESP-NOW
         | peer.send()   --> AT+ENSEND  --->| ))) 2.4GHz ((( peers
         | ESP_NOW.poll()<-- +ENRECV -------|
@@ -32,16 +32,10 @@ written. Because the radio is a co-processor over UART rather than on-chip,
    WiFi.setChannel(CH);
    while (!WiFi.STA.started()) delay(100);
    ```
-   with binding the AT link and channel:
+   with one line — the library uses the UART the board variant wires to the
+   ESP32 (`ESP_SERIAL_PORT`), so the sketch never names a serial port:
    ```cpp
-   Serial1.begin(115200);
-   ESP_NOW.setLink(Serial1, CH);
-   ```
-   On an **iLabs Challenger board** the variant already knows which UART the
-   ESP32 is on (`ESP_SERIAL_PORT`) and where its reset pins are, so there's a
-   fully automatic overload — just pass the channel:
-   ```cpp
-   ESP_NOW.setLink(CH);   // opens the variant's ESP UART for you
+   ESP_NOW.setLink(CH);   // opens the variant's ESP UART + resets the ESP32
    ```
 2. **Servicing receives.** Call `ESP_NOW.poll()` regularly from `loop()` (like
    `PubSubClient.loop()` / `ArduinoOTA.handle()`). Received frames are
@@ -53,16 +47,15 @@ written. Because the radio is a co-processor over UART rather than on-chip,
 
 ## Board reset handling
 
-On boards whose variant defines the ESP32 reset pins (`PIN_ESP_MODE` /
-`PIN_ESP_RST` — all the iLabs Challenger WiFi/WiFi6 boards), `setLink()`
-**automatically hardware-resets the ESP32 into run mode and waits for its
-`+ENREADY`** before returning. So every time the host boots (power-on or
-reset), the co-processor gets a clean, deterministic cold start — no stale
-peers, keys, or baud left over from a previous session, and the boot-ROM
-chatter is discarded for you. On boards without those pins, `setLink()` just
-binds the UART and `begin()` issues an `AT+ENDEINIT` first to clear prior
-state as best it can (a divergent link baud from a prior run still needs a
-physical reset).
+`setLink()` uses the variant's `ESP_SERIAL_PORT`, and when the variant also
+defines the ESP32 reset pins (`PIN_ESP_MODE` / `PIN_ESP_RST` — all the iLabs
+Challenger WiFi/WiFi6 boards) it **automatically hardware-resets the ESP32
+into run mode and waits for its `+ENREADY`** before returning. So every time
+the host boots (power-on or reset), the co-processor gets a clean,
+deterministic cold start — no stale peers, keys, or baud left over from a
+previous session, and the boot-ROM chatter is discarded for you. (If a
+variant defines `ESP_SERIAL_PORT` but not the reset pins, `begin()` still
+issues an `AT+ENDEINIT` first to clear prior state as best it can.)
 
 If the ESP32 reboots *unexpectedly* while running (brownout, manual reset),
 it emits `+ENREADY`; the library flags it. Register a handler to react:
@@ -75,20 +68,22 @@ ESP_NOW.onReset([](void *) {
 // ...or poll ESP_NOW.wasReset() from loop().
 ```
 
-## Hardware / wiring
+## Hardware / boards
 
-- A host board (RP2040 or RP2350) running the arduino-pico core.
-- An ESP32-C6 (or C3) flashed with the iLabs `AT+EN` interpreter.
-- A UART between them: host `Serial1` TX/RX ↔ the ESP32's AT-link UART pins,
-  plus GND. 115200 8N1 by default. Optionally wire RTS/CTS and enable flow
-  control on the ESP32 (`AT+ENFLOW`) for high-throughput bursts.
+- An **iLabs Challenger WiFi/WiFi6 board** (RP2040 or RP2350) with an on-board
+  ESP32-C6/C3 flashed with the iLabs `AT+EN` interpreter. The host↔ESP32 UART
+  and the ESP32 reset pins are wired on-board and described by the arduino-pico
+  board variant.
 
-Pick the host UART with `ESP_NOW.setLink(<Serial>, <channel>)`; any
-`HardwareSerial` works. On iLabs Challenger boards the UART and the ESP32
-reset pins are wired on-board and known to the variant, so `ESP_NOW.setLink(<channel>)`
-handles everything (see [Board reset handling](#board-reset-handling)). The
-examples auto-select: the variant path on Challenger boards, `Serial1`
-otherwise.
+The library talks to the ESP32 over the variant's `ESP_SERIAL_PORT` and knows
+the reset pins from the variant, so **the sketch never configures a serial
+port** — just `ESP_NOW.setLink(<channel>)` (see
+[Board reset handling](#board-reset-handling)). It therefore requires a board
+variant that defines `ESP_SERIAL_PORT`; on any other board `setLink()` raises
+a compile error naming the requirement.
+
+Optionally wire RTS/CTS and enable flow control on the ESP32 (`AT+ENFLOW`) for
+high-throughput bursts.
 
 ## Install
 
@@ -117,8 +112,7 @@ Peer peer(peerMac);
 
 void setup() {
   Serial.begin(115200);
-  Serial1.begin(115200);
-  ESP_NOW.setLink(Serial1, 6);
+  ESP_NOW.setLink(6);   // uses the board variant's ESP32 UART + auto reset
   ESP_NOW.begin();
   peer.add();
 }
@@ -136,7 +130,7 @@ See `examples/` for the ported **Broadcast_Master** / **Broadcast_Slave**
 
 | Arduino ESP-NOW call | AT+EN command |
 |---|---|
-| `ESP_NOW.setLink(Serial1, ch)` | (binds the UART; sets the channel for `begin()`) |
+| `ESP_NOW.setLink(ch)` | opens the variant's `ESP_SERIAL_PORT`, hardware-resets the ESP32, sets the channel for `begin()` |
 | `ESP_NOW.begin(pmk)` | `ATE0`, `AT+ENINIT=<ch>`, `AT+ENPMK=<hex>` (if pmk), `AT+ENVER?` |
 | `ESP_NOW.end()` | remove peers, `AT+ENDEINIT` |
 | `peer.add()` | `AT+ENADDPEER=<mac>,<ch>,<enc>[,<lmk>]` |

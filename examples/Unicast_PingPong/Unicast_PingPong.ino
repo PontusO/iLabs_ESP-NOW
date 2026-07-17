@@ -40,13 +40,8 @@ uint32_t seq = 0;
 void setup() {
   Serial.begin(115200);
 
-#if defined(ESP_SERIAL_PORT)
-  // iLabs Challenger boards: use the variant's ESP32 UART + automatic reset.
+  // The library uses the board variant's ESP32 UART and resets it automatically.
   ESP_NOW.setLink(ESPNOW_WIFI_CHANNEL);
-#else
-  Serial1.begin(115200);
-  ESP_NOW.setLink(Serial1, ESPNOW_WIFI_CHANNEL);
-#endif
 
   if (!ESP_NOW.begin() || !peer.add()) {
     Serial.println("ESP-NOW init / peer add failed");

@@ -9,8 +9,9 @@
  *
  * Two things differ from the ESP32-native library, by necessity of the
  * host/co-processor split (see the added members at the end of ESP_NOW_Class):
- *   - call ESP_NOW.setLink(Serial1, channel) once before ESP_NOW.begin(),
- *     in place of the ESP32 WiFi.mode()/WiFi.setChannel() bring-up;
+ *   - call ESP_NOW.setLink(channel) once before ESP_NOW.begin(), in place of
+ *     the ESP32 WiFi.mode()/WiFi.setChannel() bring-up (the library uses the
+ *     board variant's ESP_SERIAL_PORT; the sketch never names a serial port);
  *   - call ESP_NOW.poll() from loop() so received frames are dispatched to
  *     the peer onReceive() callbacks.
  */
@@ -65,21 +66,18 @@ public:
   /* ---- iLabs host-bridge extensions (not in the ESP32-native API) ---- *
    * Additive only, so upstream sketches remain source-compatible.        */
 
-  // Bind the AT link to the ESP32 co-processor and pick the ESP-NOW channel.
+  // Bring up the link to the ESP32 co-processor and pick the ESP-NOW channel.
   // Call once in setup() before begin(); replaces the ESP32 WiFi bring-up.
-  // `serial` must already be begin()'d by the sketch.
   //
-  // On iLabs Challenger boards (whose variant defines PIN_ESP_MODE/PIN_ESP_RST)
-  // this also performs an automatic hardware reset of the ESP32 into run mode
-  // and waits for its +ENREADY, giving a deterministic clean boot every time.
-  void setLink(Stream &serial, uint8_t channel);
-
-#ifdef ESP_SERIAL_PORT
-  // Fully automatic overload for boards whose variant wires the ESP32 to a
-  // known UART (ESP_SERIAL_PORT): opens that port and binds it. Just pass the
-  // channel. Available only when the board variant defines ESP_SERIAL_PORT.
+  // The UART is the one the board variant wires to the ESP32 (ESP_SERIAL_PORT)
+  // - the sketch never names a serial port. When the variant also defines the
+  // reset pins (PIN_ESP_MODE / PIN_ESP_RST), this performs an automatic
+  // hardware reset of the ESP32 into run mode and waits for its +ENREADY,
+  // giving a deterministic clean boot every time.
+  //
+  // Requires a board variant that defines ESP_SERIAL_PORT (e.g. an iLabs
+  // Challenger WiFi/WiFi6 board).
   void setLink(uint8_t channel);
-#endif
 
   // Pump the AT link: read and dispatch pending +ENRECV / send-status URCs.
   // Call frequently from loop() (received frames arrive via peer onReceive).

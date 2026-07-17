@@ -246,15 +246,20 @@ ESP_NOW_Class::ESP_NOW_Class() {
 
 ESP_NOW_Class::~ESP_NOW_Class() {}
 
-void ESP_NOW_Class::setLink(Stream &serial, uint8_t channel) {
-  g_link.begin(serial, channel);
+void ESP_NOW_Class::setLink(uint8_t channel) {
+#ifndef ESP_SERIAL_PORT
+#error "iLabs ESP-NOW requires a board variant that defines ESP_SERIAL_PORT (the UART wired to the ESP32 co-processor), e.g. an iLabs Challenger WiFi/WiFi6 board."
+#else
+  // Always the variant's ESP32 UART - the sketch never names a serial port.
+  ESP_SERIAL_PORT.begin(ILABS_ESPNOW_LINK_BAUD);
+  g_link.begin(ESP_SERIAL_PORT, channel);
   g_link.onURC(urc_handler, nullptr);
 
 #if defined(PIN_ESP_MODE) && defined(PIN_ESP_RST)
   // Fully automatic ESP32 hardware reset into run mode, using the pins the
-  // arduino-pico board variant defines. Gives a deterministic clean boot on
-  // every host start (any peers/keys/baud from a prior run are cleared), and
-  // syncs the host on the firmware's +ENREADY, discarding ROM boot chatter.
+  // board variant defines. Gives a deterministic clean boot on every host
+  // start (any peers/keys/baud from a prior run are cleared), and syncs the
+  // host on the firmware's +ENREADY, discarding ROM boot chatter.
   pinMode(PIN_ESP_MODE, OUTPUT);
   digitalWrite(PIN_ESP_MODE, HIGH);  // run mode (not serial-download)
   pinMode(PIN_ESP_RST, OUTPUT);
@@ -265,14 +270,8 @@ void ESP_NOW_Class::setLink(Stream &serial, uint8_t channel) {
   g_link.waitReady(ILABS_ESPNOW_READY_TIMEOUT_MS);
   _link_reset_flag = false;          // the boot +ENREADY is expected, not a fault
 #endif
+#endif  // ESP_SERIAL_PORT
 }
-
-#ifdef ESP_SERIAL_PORT
-void ESP_NOW_Class::setLink(uint8_t channel) {
-  ESP_SERIAL_PORT.begin(ILABS_ESPNOW_LINK_BAUD);
-  setLink(ESP_SERIAL_PORT, channel);
-}
-#endif
 
 void ESP_NOW_Class::poll() {
   g_link.poll();
@@ -300,7 +299,7 @@ bool ESP_NOW_Class::begin(const uint8_t *pmk) {
     return true;
   }
   if (!g_link.started()) {
-    log_e("ESP_NOW.setLink(Serial, channel) must be called before begin()");
+    log_e("ESP_NOW.setLink(channel) must be called before begin()");
     return false;
   }
 

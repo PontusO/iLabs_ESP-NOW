@@ -78,14 +78,9 @@ void register_new_master(const esp_now_recv_info_t *info, const uint8_t *data, i
 void setup() {
   Serial.begin(115200);
 
-  // Bring up the link to the ESP32-C6 co-processor.
-#if defined(ESP_SERIAL_PORT)
-  // iLabs Challenger boards: use the variant's ESP32 UART + automatic reset.
+  // Bring up the link to the ESP32 co-processor. The library uses the board
+  // variant's ESP32 UART and resets the co-processor automatically.
   ESP_NOW.setLink(ESPNOW_WIFI_CHANNEL);
-#else
-  Serial1.begin(115200);
-  ESP_NOW.setLink(Serial1, ESPNOW_WIFI_CHANNEL);
-#endif
 
   Serial.println("ESP-NOW Example - Broadcast Slave");
   Serial.println("  MAC Address: " + ESP_NOW.macAddress());
