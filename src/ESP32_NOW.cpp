@@ -20,6 +20,12 @@ static ATLink g_link;
 static ESP_NOW_Peer *_peers[ESP_NOW_MAX_TOTAL_PEER_NUM];
 static bool _has_begun = false;
 
+// Negotiated at begin(). File-static like the rest of the module state: the
+// ESP_NOW_Class is a singleton (matching arduino-esp32), so it holds no
+// per-instance data of its own.
+static size_t _max_data_len = 0;
+static uint32_t _version = 0;
+
 static void (*new_cb)(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg) = nullptr;
 static void *new_arg = nullptr;
 
@@ -78,6 +84,32 @@ static bool is_broadcast(const uint8_t m[6]) {
   return true;
 }
 
+// Largest payload carried in a single ESP-NOW frame over the AT bridge: the
+// v1 max (250) minus the 2-byte iLabs frame header. Unicast sends above this
+// are fragmented/reassembled by the firmware; broadcast (AT+ENBCAST) has no
+// fragmentation and is capped here.
+static const size_t ESPNOW_SINGLE_FRAME_MAX = ESP_NOW_MAX_DATA_LEN - 2;
+
+// Largest AT command line we build on the send path: an "AT+ENFRAGSEND=<mac>,
+// <len>," prefix (~31 chars) followed by 2*ESP_NOW_MAX_DATA_LEN payload hex.
+// Comfortably covers every command_hex() caller, so the send path never mallocs.
+#define ILABS_AT_CMD_MAX (64 + 2 * ESP_NOW_MAX_DATA_LEN)
+
+// Append `len` bytes of `data` as uppercase hex to `prefix` (which already
+// holds everything up to and including the trailing comma) and send the
+// resulting AT command. Everything lands in a stack buffer. Returns the
+// g_link.command() result (0 = OK, <0 / >0 = error).
+static int command_hex(const char *prefix, const uint8_t *data, size_t len) {
+  char cmd[ILABS_AT_CMD_MAX];
+  size_t plen = strlen(prefix);
+  if (plen + 2 * len + 1 > sizeof(cmd)) {
+    return -1;  // caller bounds len <= ESP_NOW_MAX_DATA_LEN; guard regardless
+  }
+  memcpy(cmd, prefix, plen);
+  bytes_to_hex(data, len, cmd + plen);
+  return g_link.command(cmd);
+}
+
 static ESP_NOW_Peer *find_peer(const uint8_t *mac) {
   for (int i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
     if (_peers[i] != nullptr && memcmp(_peers[i]->addr(), mac, 6) == 0) {
@@ -92,15 +124,13 @@ static ESP_NOW_Peer *find_peer(const uint8_t *mac) {
 static int at_addpeer(const uint8_t mac[6], uint8_t chan, bool encrypt, const uint8_t key[16]) {
   char mstr[13];
   mac_to_hex(mac, mstr);
-  char cmd[80];
+  char prefix[48];
   if (encrypt) {
-    char kh[33];
-    bytes_to_hex(key, 16, kh);
-    snprintf(cmd, sizeof(cmd), "AT+ENADDPEER=%s,%u,1,%s", mstr, (unsigned)chan, kh);
-  } else {
-    snprintf(cmd, sizeof(cmd), "AT+ENADDPEER=%s,%u,0", mstr, (unsigned)chan);
+    snprintf(prefix, sizeof(prefix), "AT+ENADDPEER=%s,%u,1,", mstr, (unsigned)chan);
+    return command_hex(prefix, key, 16);
   }
-  return g_link.command(cmd);
+  snprintf(prefix, sizeof(prefix), "AT+ENADDPEER=%s,%u,0", mstr, (unsigned)chan);
+  return g_link.command(prefix);
 }
 
 /* ---- URC dispatch (called by ATLink from command()/poll()) --------- */
@@ -111,8 +141,9 @@ static void urc_handler(const char *line, void *arg) {
   if (strncmp(line, "+ENRECV:", 8) == 0) {
     // src,len,rssi,payload_hex[,dst]
     char buf[ILABS_ESPNOW_LINE_MAX];
-    strncpy(buf, line + 8, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    size_t blen = strlen(line + 8);
+    if (blen >= sizeof(buf)) return;  // line is already length-bounded by ATLink
+    memcpy(buf, line + 8, blen + 1);
 
     char *f[5];
     int nf = 0;
@@ -140,12 +171,11 @@ static void urc_handler(const char *line, void *arg) {
       bcast = is_broadcast(dst);
     }
 
-    uint8_t *payload = (uint8_t *)malloc(len > 0 ? (size_t)len : 1);
-    if (!payload) return;
-    if (len > 0 && !hex_to_bytes(hex, (size_t)len, payload)) {
-      free(payload);
-      return;
-    }
+    // Decode into a stack buffer (no per-frame malloc). `hex` points into buf,
+    // so len is bounded by the line length: len <= (ILABS_ESPNOW_LINE_MAX-8)/2.
+    uint8_t payload[ILABS_ESPNOW_LINE_MAX / 2];
+    if ((size_t)len > sizeof(payload)) return;
+    if (len > 0 && !hex_to_bytes(hex, (size_t)len, payload)) return;
 
     ESP_NOW_Peer *pr = find_peer(src);
     if (pr) {
@@ -158,7 +188,6 @@ static void urc_handler(const char *line, void *arg) {
       info.rx_ctrl = nullptr;
       new_cb(&info, payload, len, new_arg);
     }
-    free(payload);
     return;
   }
 
@@ -262,11 +291,20 @@ static void cap_peercount(const char *line, void *arg) {
   }
 }
 
+// Query the co-processor's peer table once (AT+ENLISTPEER?), returning both
+// the total and encrypted counts. Callers that need only one still make a
+// single round-trip. Returns false on link/command error.
+static bool query_peer_counts(PeerCount &pc) {
+  pc.total = 0;
+  pc.enc = 0;
+  return g_link.command("AT+ENLISTPEER?", cap_peercount, &pc) == 0;
+}
+
 /* ---- ESP_NOW_Class ------------------------------------------------- */
 
 ESP_NOW_Class::ESP_NOW_Class() {
-  max_data_len = 0;
-  version = 0;
+  _max_data_len = 0;
+  _version = 0;
 }
 
 ESP_NOW_Class::~ESP_NOW_Class() {}
@@ -373,24 +411,20 @@ bool ESP_NOW_Class::begin(const uint8_t *pmk) {
   }
 
   if (pmk) {
-    char pcmd[16 + 33];
-    char hex[33];
-    bytes_to_hex(pmk, 16, hex);
-    snprintf(pcmd, sizeof(pcmd), "AT+ENPMK=%s", hex);
-    if (g_link.command(pcmd) != 0) {
+    if (command_hex("AT+ENPMK=", pmk, 16) != 0) {
       log_e("AT+ENPMK failed");
       return false;
     }
   }
 
-  version = 1;
+  _version = 1;
   VerCap v = {0, false};
   g_link.command("AT+ENVER?", cap_ver, &v);
   if (v.got && v.espnow_ver) {
-    version = v.espnow_ver;
+    _version = v.espnow_ver;
   }
   // Single-frame AT payload cap; matches ESP-NOW v1 (ESP_NOW_MAX_DATA_LEN).
-  max_data_len = ESP_NOW_MAX_DATA_LEN;
+  _max_data_len = ESP_NOW_MAX_DATA_LEN;
 
   _has_begun = true;
   return true;
@@ -416,8 +450,8 @@ int ESP_NOW_Class::getTotalPeerCount() const {
     log_e("ESP-NOW not initialized");
     return -1;
   }
-  PeerCount pc = {0, 0};
-  if (g_link.command("AT+ENLISTPEER?", cap_peercount, &pc) != 0) {
+  PeerCount pc;
+  if (!query_peer_counts(pc)) {
     return -1;
   }
   return pc.total;
@@ -428,27 +462,27 @@ int ESP_NOW_Class::getEncryptedPeerCount() const {
     log_e("ESP-NOW not initialized");
     return -1;
   }
-  PeerCount pc = {0, 0};
-  if (g_link.command("AT+ENLISTPEER?", cap_peercount, &pc) != 0) {
+  PeerCount pc;
+  if (!query_peer_counts(pc)) {
     return -1;
   }
   return pc.enc;
 }
 
 int ESP_NOW_Class::getMaxDataLen() const {
-  if (max_data_len == 0) {
+  if (_max_data_len == 0) {
     log_e("ESP-NOW not initialized. Call begin() first.");
     return -1;
   }
-  return max_data_len;
+  return _max_data_len;
 }
 
 int ESP_NOW_Class::getVersion() const {
-  if (version == 0) {
+  if (_version == 0) {
     log_e("ESP-NOW not initialized. Call begin() first.");
     return -1;
   }
-  return version;
+  return _version;
 }
 
 int ESP_NOW_Class::availableForWrite() {
@@ -457,7 +491,7 @@ int ESP_NOW_Class::availableForWrite() {
 }
 
 // Send-to-all: mapped to an ESP-NOW broadcast (AT+ENBCAST). The AT broadcast
-// path carries at most 248 bytes (250 - the 2-byte iLabs frame header).
+// path carries at most ESPNOW_SINGLE_FRAME_MAX bytes (no fragmentation).
 size_t ESP_NOW_Class::write(const uint8_t *data, size_t len) {
   if (!_has_begun) {
     log_e("ESP-NOW not initialized. Call begin() first.");
@@ -466,21 +500,13 @@ size_t ESP_NOW_Class::write(const uint8_t *data, size_t len) {
   if (len == 0) {
     return 0;
   }
-  const size_t BCAST_MAX = 248;
-  if (len > BCAST_MAX) {
-    len = BCAST_MAX;
+  if (len > ESPNOW_SINGLE_FRAME_MAX) {
+    len = ESPNOW_SINGLE_FRAME_MAX;
   }
 
-  size_t need = 32 + 2 * len;
-  char *cmd = (char *)malloc(need);
-  if (!cmd) {
-    return 0;
-  }
-  int off = snprintf(cmd, need, "AT+ENBCAST=%u,", (unsigned)len);
-  bytes_to_hex(data, len, cmd + off);
-  int r = g_link.command(cmd);
-  free(cmd);
-  return r == 0 ? len : 0;
+  char prefix[24];
+  snprintf(prefix, sizeof(prefix), "AT+ENBCAST=%u,", (unsigned)len);
+  return command_hex(prefix, data, len) == 0 ? len : 0;
 }
 
 void ESP_NOW_Class::onNewPeer(void (*cb)(const esp_now_recv_info_t *info, const uint8_t *data, int len, void *arg), void *arg) {
@@ -653,28 +679,22 @@ size_t ESP_NOW_Peer::send(const uint8_t *data, int len) {
     return 0;
   }
 
-  char mstr[13];
-  mac_to_hex(mac, mstr);
-  size_t need = 48 + 2 * (size_t)len;
-  char *cmd = (char *)malloc(need);
-  if (!cmd) {
-    return 0;
+  // Broadcast peer: identical wire path to ESP_NOW.write(); delegate so the
+  // AT+ENBCAST framing (and its single-frame cap) lives in exactly one place.
+  if (is_broadcast(mac)) {
+    return ESP_NOW.write(data, (size_t)len);
   }
 
-  int off;
-  if (is_broadcast(mac)) {
-    if (len > 248) len = 248;
-    off = snprintf(cmd, need, "AT+ENBCAST=%d,", len);
-  } else if (len > 248) {
+  char mstr[13];
+  mac_to_hex(mac, mstr);
+  char prefix[48];
+  if ((size_t)len > ESPNOW_SINGLE_FRAME_MAX) {
     // Larger-than-one-frame unicast: the firmware fragments/reassembles.
-    off = snprintf(cmd, need, "AT+ENFRAGSEND=%s,%d,", mstr, len);
+    snprintf(prefix, sizeof(prefix), "AT+ENFRAGSEND=%s,%d,", mstr, len);
   } else {
-    off = snprintf(cmd, need, "AT+ENSEND=%s,%d,", mstr, len);
+    snprintf(prefix, sizeof(prefix), "AT+ENSEND=%s,%d,", mstr, len);
   }
-  bytes_to_hex(data, (size_t)len, cmd + off);
-  int r = g_link.command(cmd);
-  free(cmd);
-  return r == 0 ? (size_t)len : 0;
+  return command_hex(prefix, data, (size_t)len) == 0 ? (size_t)len : 0;
 }
 
 ESP_NOW_Peer::operator bool() const {

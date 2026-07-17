@@ -109,9 +109,8 @@ public:
   // True (once) if the co-processor rebooted since the last call; clears on read.
   bool wasReset();
 
-protected:
-  size_t max_data_len;
-  uint32_t version;
+  // The singleton holds no per-instance state: begin()-negotiated values
+  // (version, max data length) and the peer table live in ESP32_NOW.cpp.
 };
 
 class ESP_NOW_Peer {
