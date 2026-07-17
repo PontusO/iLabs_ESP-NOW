@@ -106,6 +106,7 @@ TesterPeer *g_tp = nullptr;
 /* ---- RESPONDER: echo + control server ------------------------------ */
 
 uint32_t g_resp_last_rx = 0;
+volatile int g_switch = 0;  // deferred re-key request: 1 = encrypt, -1 = plain
 
 class RespPeer : public ESP_NOW_Peer {
 public:
@@ -127,14 +128,11 @@ public:
     } else if (op == OP_HELLO) {
       reply[1] = ACK_BYTE;
       send(reply, 2);
-    } else if (op == OP_ENCRYPT) {
-      setKey(SHARED_LMK);  // our side of the link is now encrypted
-      reply[1] = ACK_BYTE;
-      send(reply, 2);      // (this ack is encrypted; the tester may miss it)
-    } else if (op == OP_PLAIN) {
-      setKey(nullptr);     // back to unencrypted
-      reply[1] = ACK_BYTE;
-      send(reply, 2);
+    } else if (op == OP_ENCRYPT || op == OP_PLAIN) {
+      // Re-keying re-enters the AT transport (AT+ENADDPEER). Doing that from
+      // inside this callback (which runs within poll()) is reentrant, so defer
+      // it to loop(). No ack: the tester waits a fixed window instead.
+      g_switch = (op == OP_ENCRYPT) ? 1 : -1;
     }
   }
 
@@ -198,16 +196,31 @@ bool rpc(uint8_t op, const uint8_t *payload, int plen, bool broadcast) {
   return g_rx;
 }
 
+// Send a 1-byte control opcode (no reply expected).
+void sendCtrl(uint8_t op) {
+  uint8_t f = op;
+  g_tp->send(&f, 1);
+}
+
 // Echo round-trip: reply must be [flags][payload], flags bcast bit as expected.
+// Prints a one-line diagnosis on failure (blind-debug aid).
 bool echoOk(const uint8_t *payload, int plen, bool broadcast) {
+  bool gotReply = false;
+  int lastLen = -1, lastFlag = -1, mism = -1;
   for (int attempt = 0; attempt < 3; attempt++) {
     if (rpc(OP_ECHO, payload, plen, broadcast)) {
+      gotReply = true;
+      lastLen = g_rx_len;
+      lastFlag = g_rx_buf[0];
       bool bcast_bit = (g_rx_buf[0] & 0x01) != 0;
-      if (g_rx_len == plen + 1 && bcast_bit == broadcast && memcmp(g_rx_buf + 1, payload, plen) == 0) {
+      mism = (g_rx_len == plen + 1) ? memcmp(g_rx_buf + 1, payload, plen) : 999;
+      if (g_rx_len == plen + 1 && bcast_bit == broadcast && mism == 0) {
         return true;
       }
     }
   }
+  Serial.printf("      diag: gotReply=%d len=%d(exp %d) flag=0x%02X exp_bcast=%d payloadMism=%d\n", gotReply, lastLen,
+                plen + 1, lastFlag < 0 ? 0 : lastFlag, broadcast, mism);
   return false;
 }
 
@@ -300,14 +313,14 @@ void runTests(const uint8_t *peerMac) {
   check("write(uint8_t) did not fault", true);
 
   // --- OTA: encrypted unicast round-trip (per-peer LMK) -------------
-  rpc(OP_ENCRYPT, nullptr, 0, false);  // ask responder to go encrypted (ack may be lost)
-  pollFor(300);                           // let it switch
-  g_tp->setKey(SHARED_LMK);                  // our side encrypted too
+  sendCtrl(OP_ENCRYPT);      // responder switches its side (in its loop())
+  pollFor(600);              // give it time to re-key
+  g_tp->setKey(SHARED_LMK);  // our side encrypted too
   bool encOk = echoOk(small, sizeof(small), false);
   check("encrypted unicast round-trip", encOk);
   // Tear back down so re-runs start unencrypted.
-  rpc(OP_PLAIN, nullptr, 0, false);
-  pollFor(300);
+  sendCtrl(OP_PLAIN);
+  pollFor(600);
   g_tp->setKey(nullptr);
   check("back to unencrypted after teardown", echoOk(small, sizeof(small), false));
 
@@ -372,6 +385,12 @@ void setup() {
 
 void loop() {
   ESP_NOW.poll();
+
+  // Apply a deferred re-key request outside the receive callback.
+  if (g_switch != 0 && g_tester_peer) {
+    g_tester_peer->setKey(g_switch > 0 ? SHARED_LMK : nullptr);
+    g_switch = 0;
+  }
 
   if (g_role == ROLE_RESPONDER && g_tester_peer && millis() - g_resp_last_rx > RESP_IDLE_DROP_MS) {
     // Tester went quiet (finished, reset, or crashed) - forget it so a fresh
