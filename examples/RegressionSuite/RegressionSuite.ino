@@ -285,11 +285,13 @@ void runTests(const uint8_t *peerMac) {
   check("unicast single-frame round-trip", echoOk(small, sizeof(small), false));
 
   // --- OTA: unicast fragmented echo (payload > 248 B) ---------------
-  static uint8_t big[250];
+  // 249 payload + 1 opcode = a 250 B frame -> fragmented (>248), and still
+  // within getMaxDataLen()==250 so send() doesn't clamp off the last byte.
+  static uint8_t big[249];
   for (int i = 0; i < (int)sizeof(big); i++) {
     big[i] = (uint8_t)(i * 7 + 1);
   }
-  check("unicast fragmented round-trip (250 B)", echoOk(big, sizeof(big), false));
+  check("unicast fragmented round-trip (250 B frame)", echoOk(big, sizeof(big), false));
 
   // --- OTA: broadcast ------------------------------------------------
   const uint8_t bc[6] = {0xB0, 0xCA, 0x57, 0x11, 0x22, 0x33};
@@ -332,7 +334,10 @@ void setup() {
   }
 
   ESP_NOW.setLink(ESPNOW_WIFI_CHANNEL);
-  if (!ESP_NOW.begin()) {
+  // Both boards share the same PMK so the encrypted round-trip interoperates
+  // (ESP-NOW needs a matching PMK, not just a matching per-peer LMK). The
+  // tester re-begins with the same PMK during its scored end()/begin() test.
+  if (!ESP_NOW.begin(SHARED_PMK)) {
     Serial.println("FATAL: ESP_NOW.begin() failed");
     while (true) {
       delay(1000);
