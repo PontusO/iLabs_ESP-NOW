@@ -124,7 +124,27 @@ void loop() {
 ```
 
 See `examples/` for the ported **Broadcast_Master** / **Broadcast_Slave**
-(the arduino-esp32 canonical examples) and **Unicast_PingPong**.
+(the arduino-esp32 canonical examples), **Unicast_PingPong**, and
+**Discovery_PingPong** (finds the other board with `ESP_NOW.discover()`
+instead of a hard-coded MAC).
+
+### Discovery (iLabs extension)
+
+`ESP_NOW.discover()` has no arduino-esp32 equivalent — it drives the iLabs
+`AT+ENDISCOVER` firmware feature, where any board running the interpreter
+answers a broadcast probe in firmware (no host involvement on the responder):
+
+```cpp
+ESP_NOW_Found found[8];
+int n = ESP_NOW.discover(found, 8, 1000);   // scan for 1 s on the current channel
+for (int i = 0; i < n; i++) {
+  // found[i].mac  - responder's STA MAC
+  // found[i].rssi - RSSI this board measured
+}
+```
+
+It blocks for the collection window and returns the count found (or -1 on
+error). Only covers the current channel.
 
 ## API → AT mapping
 
@@ -140,6 +160,7 @@ See `examples/` for the ported **Broadcast_Master** / **Broadcast_Slave**
 | `peer.setKey(lmk)` / `setChannel()` | re-issue `AT+ENADDPEER` (in-place modify) |
 | `getTotalPeerCount()` / `getEncryptedPeerCount()` | `AT+ENLISTPEER?` |
 | `ESP_NOW.macAddress()` | `AT+ENMAC?` |
+| `ESP_NOW.discover(out,max,ms)` | `AT+ENDISCOVER[=<ms>]` → `+ENDISCOVER:<mac>,<rssi>` per responder |
 | `peer.onReceive(d,n,bcast)` | `+ENRECV:<src>,<n>,<rssi>,<hex>,<dst>` (dispatched in `poll()`) |
 | `peer.onSent(ok)` | `+ENSENDOK` / `+ENSENDFAIL` |
 | `ESP_NOW.onNewPeer(cb)` | `+ENRECV` from an unregistered source |
@@ -151,11 +172,12 @@ from the destination MAC that the ESP-IDF firmware appends to `+ENRECV`.
 
 Core path implemented and compile-tested for RP2040 and RP2350: init,
 add/remove peer, unicast send + delivery status, broadcast send/receive,
-receive dispatch, `onNewPeer`, PMK-encrypted peers.
+receive dispatch, `onNewPeer`, PMK-encrypted peers, and device discovery
+(`ESP_NOW.discover()`).
 
 Not yet wrapped: per-peer PHY rate (the AT firmware exposes rate globally via
-`AT+ENRATE`; `setRate()` is a stored no-op), device discovery
-(`AT+ENDISCOVER`), RSSI/stats accessors, and ESP-NOW v2 (>250 B) framing.
+`AT+ENRATE`; `setRate()` is a stored no-op), RSSI/stats accessors, and
+ESP-NOW v2 (>250 B) framing.
 `getMaxDataLen()` reports 250 (ESP-NOW v1); unicast sends above 248 B are
 transparently fragmented by the firmware.
 

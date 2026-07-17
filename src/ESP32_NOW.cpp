@@ -220,6 +220,31 @@ static void cap_ver(const char *line, void *arg) {
   }
 }
 
+struct DiscoverCap {
+  ESP_NOW_Found *out;
+  int max;
+  int count;
+};
+static void cap_discover(const char *line, void *arg) {
+  // +ENDISCOVER:<mac>,<rssi>
+  if (strncmp(line, "+ENDISCOVER:", 12) != 0) {
+    return;
+  }
+  DiscoverCap *d = (DiscoverCap *)arg;
+  if (d->count >= d->max) {
+    return;
+  }
+  const char *p = line + 12;
+  uint8_t mac[6];
+  if (!parse_mac(p, mac)) {
+    return;
+  }
+  const char *comma = strchr(p, ',');
+  memcpy(d->out[d->count].mac, mac, 6);
+  d->out[d->count].rssi = comma ? atoi(comma + 1) : 0;
+  d->count++;
+}
+
 struct PeerCount {
   int total;
   int enc;
@@ -292,6 +317,33 @@ String ESP_NOW_Class::macAddress() {
   MacCap m = {{0}, false};
   g_link.command("AT+ENMAC?", cap_mac, &m);
   return m.got ? String(m.mac) : String();
+}
+
+int ESP_NOW_Class::discover(ESP_NOW_Found *out, int max, uint32_t timeout_ms) {
+  if (!_has_begun) {
+    log_e("ESP-NOW not initialized. Call begin() first.");
+    return -1;
+  }
+  if (!out || max <= 0) {
+    return -1;
+  }
+
+  char cmd[32];
+  uint32_t window;
+  if (timeout_ms == 0) {
+    strcpy(cmd, "AT+ENDISCOVER");  // firmware default collection window (~1s)
+    window = 1000;
+  } else {
+    snprintf(cmd, sizeof(cmd), "AT+ENDISCOVER=%lu", (unsigned long)timeout_ms);
+    window = timeout_ms;
+  }
+
+  DiscoverCap cap = {out, max, 0};
+  // The command blocks for the whole collection window; give it margin.
+  if (g_link.command(cmd, cap_discover, &cap, window + 2000) != 0) {
+    return -1;
+  }
+  return cap.count;
 }
 
 bool ESP_NOW_Class::begin(const uint8_t *pmk) {

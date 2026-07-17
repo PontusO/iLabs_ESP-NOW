@@ -35,6 +35,12 @@
 #define ILABS_ESPNOW_LINK_BAUD 115200
 #endif
 
+// A responder found by ESP_NOW.discover() (iLabs AT+ENDISCOVER extension).
+struct ESP_NOW_Found {
+  uint8_t mac[6];  // the responder's STA MAC
+  int     rssi;    // RSSI measured by THIS device (0 if unavailable)
+};
+
 class ESP_NOW_Peer;  //forward declaration for friend function
 
 class ESP_NOW_Class : public Print {
@@ -86,6 +92,13 @@ public:
   // This device's (the ESP32 co-processor's) STA MAC, "AABBCCDDEEFF".
   // Valid after setLink(); works before begin().
   String macAddress();
+
+  // Discover other iLabs ESP-NOW devices on the current channel: broadcast a
+  // probe and collect responders for `timeout_ms` (0 = firmware default, ~1s;
+  // otherwise 50..30000). Fills up to `max` entries of `out` and returns the
+  // count found (0 if none) or -1 on error. Blocks for the collection window.
+  // iLabs AT+ENDISCOVER extension - not part of the ESP32-native API.
+  int discover(ESP_NOW_Found *out, int max, uint32_t timeout_ms = 0);
 
   // Register a callback fired when the co-processor unexpectedly reboots (its
   // +ENREADY boot marker is seen during operation). The ESP32 loses its peers

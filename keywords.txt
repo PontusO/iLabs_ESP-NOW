@@ -9,6 +9,7 @@
 ESP_NOW	KEYWORD1
 ESP_NOW_Class	KEYWORD1
 ESP_NOW_Peer	KEYWORD1
+ESP_NOW_Found	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
@@ -16,6 +17,7 @@ ESP_NOW_Peer	KEYWORD1
 
 setLink	KEYWORD2
 poll	KEYWORD2
+discover	KEYWORD2
 begin	KEYWORD2
 end	KEYWORD2
 macAddress	KEYWORD2
