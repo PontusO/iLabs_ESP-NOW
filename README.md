@@ -126,9 +126,20 @@ void loop() {
 ```
 
 See `examples/` for the ported **Broadcast_Master** / **Broadcast_Slave**
-(the arduino-esp32 canonical examples), **Unicast_PingPong**, and
+(the arduino-esp32 canonical examples), **Unicast_PingPong**,
 **Discovery_PingPong** (finds the other board with `ESP_NOW.discover()`
-instead of a hard-coded MAC).
+instead of a hard-coded MAC), and **RegressionSuite** (below).
+
+### Regression testing
+
+**RegressionSuite** is a two-board self-test: flash the same sketch to two
+boards, they auto-assign roles by MAC (lower = tester, higher = echo server),
+and the tester prints a PASS/FAIL report exercising the whole API — local
+getters/setters, peer add/remove, unicast (single-frame + fragmented),
+broadcast, discovery, and an encrypted round-trip. Use it to catch regressions
+in this library or the AT+EN firmware as they evolve. See
+[`extras/REGRESSION.md`](extras/REGRESSION.md) for the recommended hardware rig
+and how to read the output.
 
 ### Discovery (iLabs extension)
 
