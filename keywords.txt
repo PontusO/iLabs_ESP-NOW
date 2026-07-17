@@ -1,0 +1,51 @@
+#######################################
+# Syntax Coloring Map for iLabs ESP-NOW
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+ESP_NOW	KEYWORD1
+ESP_NOW_Class	KEYWORD1
+ESP_NOW_Peer	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+setLink	KEYWORD2
+poll	KEYWORD2
+begin	KEYWORD2
+end	KEYWORD2
+macAddress	KEYWORD2
+getTotalPeerCount	KEYWORD2
+getEncryptedPeerCount	KEYWORD2
+getMaxDataLen	KEYWORD2
+getVersion	KEYWORD2
+availableForWrite	KEYWORD2
+write	KEYWORD2
+onNewPeer	KEYWORD2
+removePeer	KEYWORD2
+add	KEYWORD2
+remove	KEYWORD2
+send	KEYWORD2
+addr	KEYWORD2
+getChannel	KEYWORD2
+setChannel	KEYWORD2
+getInterface	KEYWORD2
+setInterface	KEYWORD2
+setRate	KEYWORD2
+getRate	KEYWORD2
+isEncrypted	KEYWORD2
+setKey	KEYWORD2
+onReceive	KEYWORD2
+onSent	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+BROADCAST_ADDR	LITERAL1
+WIFI_IF_STA	LITERAL1
+WIFI_IF_AP	LITERAL1
