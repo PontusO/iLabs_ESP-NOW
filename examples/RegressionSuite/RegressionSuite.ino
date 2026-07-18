@@ -24,7 +24,9 @@
             (+ENERR:<n> code, plain ERROR, or timeout) - bad grammar, wrong
             command TYPE, out-of-range channel, malformed MAC/PMK/LMK, and
             over-length / non-hex payloads on SEND/BCAST/FRAGSEND. This is the
-            drift tripwire against the AT+EN Command Set Spec v0.1.
+            drift tripwire against the AT+EN Command Set Spec v0.1. The
+            co-processor family (ESP32-C6/C3 vs ESP8285) is detected at runtime
+            from AT+CGMM, and the ENRATE/ENRSSI asserts branch on it.
 
     Phase 2 - library API:
       Local:  setLink, begin, begin(pmk), end, macAddress, getVersion,
@@ -250,6 +252,12 @@ bool echoOk(const uint8_t *payload, int plen, bool broadcast) {
 static char g_at_line[96];
 static bool g_at_got;
 
+// The AT+EN co-processor family, detected at runtime (see runRawATTests). A few
+// commands behave differently on the ESP8285/ESP8266 SDK build than on the
+// ESP32-C6/C3 IDF build, so the assertions below branch on this. It is a
+// property of the *attached slave*, not of this host build - hence no #ifdef.
+static bool g_is_esp8285 = false;
+
 static void atCapCb(const char *line, void *) {
   strncpy(g_at_line, line, sizeof(g_at_line) - 1);
   g_at_line[sizeof(g_at_line) - 1] = '\0';
@@ -271,6 +279,15 @@ static bool atCap(const char *cmd, const char *prefix) {
 
 void runRawATTests() {
   Serial.println("\n--- Phase 1: raw AT protocol (positive + negative) ---");
+
+  // Detect the co-processor family from its AT+CGMM model string ("ESP8285
+  // ESP-NOW" vs "ESP32-C6 ESP-NOW"). ENRATE and ENRSSI assertions below branch
+  // on this, since the ESP8285/ESP8266 SDK build handles them differently.
+  g_at_got = false;
+  g_at_line[0] = '\0';
+  ESP_NOW.command("AT+CGMM", atCapCb, nullptr);
+  g_is_esp8285 = g_at_got && strstr(g_at_line, "8285") != nullptr;
+  Serial.printf("  (co-processor model: %s)\n", g_at_got ? g_at_line : "unknown");
 
   // === Positive: well-formed commands must answer OK ===
   check("[AT+] bare AT -> OK", atCmd("AT") == 0);
@@ -332,8 +349,23 @@ void runRawATTests() {
   check("[AT-] DISCOVER window <50 -> ERROR", atCmd("AT+ENDISCOVER=49") == -1);
   check("[AT-] DISCOVER window >30000 -> ERROR", atCmd("AT+ENDISCOVER=30001") == -1);
   check("[AT-] FLOW mode>3 -> ERROR", atCmd("AT+ENFLOW=4") == -1);
-  check("[AT-] RATE index>42 -> ERROR", atCmd("AT+ENRATE=43") == -1);
   check("[AT-] BAUD invalid value -> ERROR", atCmd("AT+ENBAUD=12345") == -1);
+
+  // -- ENRATE: target-dependent. C6/C3 reject an out-of-range index with plain
+  //    ERROR; the ESP8285 build has no rate control, so ANY rate command is
+  //    +ENERR:8 (EN_ERR_UNSUPPORTED) before the range is even looked at.
+  check("[AT-] RATE index>42 (ERROR on C6/C3, +ENERR:8 on ESP8285)",
+        atCmd("AT+ENRATE=43") == (g_is_esp8285 ? 8 : -1));
+
+  // -- ENRSSI: last-frame signal strength.
+  //    Malformed forms ERROR on every target...
+  check("[AT-] RSSI bad MAC -> ERROR", atCmd("AT+ENRSSI=ZZ0000000041") == -1);
+  check("[AT-] RSSI unknown peer -> ERROR", atCmd("AT+ENRSSI=020000000099") == -1);
+  //    ...but the query form is target-dependent: discovery in setup() already
+  //    gave the C6/C3 a frame to measure (so it answers OK), whereas the ESP8285
+  //    SDK's RX callback carries no RSSI, so it is never tracked and ERRORs.
+  check("[AT] RSSI query (OK on C6/C3, ERROR on ESP8285)",
+        atCmd("AT+ENRSSI?") == (g_is_esp8285 ? -1 : 0));
 }
 
 void runTests(const uint8_t *peerMac) {
