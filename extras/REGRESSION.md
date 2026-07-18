@@ -5,7 +5,18 @@ library** and in the **AT+EN interpreter firmware** as they evolve. Build it
 once, keep it wired, and re-run after every change.
 
 The test software is `examples/RegressionSuite` — one sketch, flashed to both
-boards. It exercises the full public API and prints a PASS/FAIL report.
+boards. It prints a PASS/FAIL report in two phases:
+
+- **Phase 1 — raw AT protocol.** Drives the AT+EN firmware directly (through
+  `ESP_NOW.command()`) and asserts both the OK paths *and* that malformed input
+  is rejected with the exact spec'd result (`+ENERR:<n>`, plain `ERROR`, or
+  timeout). This is the tripwire for the firmware drifting from the AT+EN
+  Command Set Spec v0.1 — bad grammar, wrong command TYPE, out-of-range
+  channel, malformed MAC/PMK/LMK, over-length / non-hex payloads.
+- **Phase 2 — library API.** Exercises the full public C++ surface (local
+  getters, peer management, OTA round-trips) plus negative/boundary cases
+  (zero/negative-length sends, add/remove idempotency and count accounting, an
+  out-of-range-channel `add()` that must fail, discover() argument guards).
 
 ## Bill of materials
 
@@ -53,15 +64,24 @@ Discovering partner...
 Partner F0F5BD319BB0 -> role: TESTER
 
 ===== iLabs ESP-NOW regression suite =====
+
+--- Phase 1: raw AT protocol (positive + negative) ---
+  [PASS] [AT+] bare AT -> OK
+  [PASS] [AT+] ENVER? emits +ENVER:
+  ...
+  [PASS] [AT-] unknown command -> +ENERR:8
+  [PASS] [AT-] SEND len>248 -> +ENERR:4
+  [PASS] [AT-] ADDPEER bad-length LMK -> +ENERR:6
+
+--- Phase 2: library API (contract + OTA) ---
   [PASS] macAddress() is 12 hex chars
   [PASS] getVersion() >= 1
   ...
+  [PASS] add() with channel 200 -> false (firmware rejects)
   [PASS] encrypted unicast round-trip
-  [PASS] back to unencrypted after teardown
-  [PASS] removePeer(responder) returns true
   [PASS] peer count dropped after removePeer
 
-===== RESULT: 34 passed, 0 failed =====
+===== RESULT: 96 passed, 0 failed =====
 >>> ALL TESTS PASSED <<<
 ```
 

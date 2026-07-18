@@ -109,6 +109,22 @@ public:
   // True (once) if the co-processor rebooted since the last call; clears on read.
   bool wasReset();
 
+  // Send a raw AT command line to the co-processor and wait for its terminal
+  // response. For diagnostics and for regression-testing the AT+EN firmware
+  // against its spec - normal sketches use the typed API above instead.
+  //
+  // Returns the transport result code:
+  //     0  on OK,
+  //    >0  the +ENERR:<n> code on a coded error,
+  //    -1  on a plain ERROR,
+  //    -2  on timeout / link not started.
+  // Any intermediate result line (e.g. "+ENVER:1.0.0,0", "+ENMAC:...") is
+  // passed to onLine(line, arg) if given. `cmd` is sent verbatim (no CRLF
+  // needed - the transport appends it). iLabs extension, not in the ESP32 API.
+  int command(const char *cmd,
+              void (*onLine)(const char *line, void *arg) = nullptr,
+              void *arg = nullptr, uint32_t timeout_ms = 0);
+
   // The singleton holds no per-instance state: begin()-negotiated values
   // (version, max data length) and the peer table live in ESP32_NOW.cpp.
 };

@@ -357,6 +357,11 @@ String ESP_NOW_Class::macAddress() {
   return m.got ? String(m.mac) : String();
 }
 
+int ESP_NOW_Class::command(const char *cmd, void (*onLine)(const char *line, void *arg), void *arg,
+                           uint32_t timeout_ms) {
+  return g_link.command(cmd, onLine, arg, timeout_ms);
+}
+
 int ESP_NOW_Class::discover(ESP_NOW_Found *out, int max, uint32_t timeout_ms) {
   if (!_has_begun) {
     log_e("ESP-NOW not initialized. Call begin() first.");

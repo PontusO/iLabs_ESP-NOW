@@ -16,14 +16,28 @@
 
     COVERAGE
     --------
-    Local:  setLink, begin, begin(pmk), end, macAddress, getVersion,
-            getMaxDataLen, availableForWrite, discover, onReset, wasReset,
-            getTotalPeerCount, getEncryptedPeerCount, removePeer.
-    Peer:   ctor, add, remove, send, addr/addr(set), get/setChannel,
-            get/setInterface, get/setRate, isEncrypted, setKey, operator bool,
-            onReceive, onSent.
-    OTA:    unicast (single-frame + fragmented), broadcast (write + write(byte)),
-            onNewPeer, and an encrypted unicast round-trip (per-peer LMK).
+    The scored sequence runs in two phases:
+
+    Phase 1 - raw AT protocol (ESP_NOW.command() passthrough): positive OK
+            paths for the query/exec commands, and negative paths that assert
+            the firmware rejects malformed input with the exact spec'd result
+            (+ENERR:<n> code, plain ERROR, or timeout) - bad grammar, wrong
+            command TYPE, out-of-range channel, malformed MAC/PMK/LMK, and
+            over-length / non-hex payloads on SEND/BCAST/FRAGSEND. This is the
+            drift tripwire against the AT+EN Command Set Spec v0.1.
+
+    Phase 2 - library API:
+      Local:  setLink, begin, begin(pmk), end, macAddress, getVersion,
+              getMaxDataLen, availableForWrite, discover, onReset, wasReset,
+              getTotalPeerCount, getEncryptedPeerCount, removePeer.
+      Peer:   ctor, add, remove, send, addr/addr(set), get/setChannel,
+              get/setInterface, get/setRate, isEncrypted, setKey, operator bool,
+              onReceive, onSent.
+      Neg:    zero/negative-length send short-circuits, add()/removePeer()
+              idempotency + count accounting, an out-of-range-channel add()
+              that must fail, and discover() argument guards.
+      OTA:    unicast (single-frame + fragmented), broadcast (write + write(byte)),
+              onNewPeer, and an encrypted unicast round-trip (per-peer LMK).
 
     NOTE: fragmented RECEIVE beyond ~290 B needs a bigger line buffer; build with
     -DILABS_ESPNOW_LINE_MAX=2048 to raise the frag test payloads.
@@ -224,8 +238,110 @@ bool echoOk(const uint8_t *payload, int plen, bool broadcast) {
   return false;
 }
 
+/* ---- PHASE 1: raw AT-protocol tests -------------------------------- *
+ * These drive the AT+EN firmware directly through ESP_NOW.command(), the
+ * library's raw passthrough, and assert the exact terminal result code:
+ *     0  = OK, >0 = the +ENERR:<n> code, -1 = plain ERROR, -2 = timeout.
+ * They pin the firmware's spec'd accept/reject contract so a drift in its
+ * argument validation shows up as a FAIL. Nothing here goes over the air or
+ * changes the link/radio config: every negative case is rejected before any
+ * side effect, and the one add/delete pair nets back to zero peers.        */
+
+static char g_at_line[96];
+static bool g_at_got;
+
+static void atCapCb(const char *line, void *) {
+  strncpy(g_at_line, line, sizeof(g_at_line) - 1);
+  g_at_line[sizeof(g_at_line) - 1] = '\0';
+  g_at_got = true;
+}
+
+// Result code of a raw AT command (see ESP_NOW.command() for the mapping).
+static int atCmd(const char *cmd) {
+  return ESP_NOW.command(cmd);
+}
+
+// True iff `cmd` returns OK *and* emits an intermediate line starting `prefix`.
+static bool atCap(const char *cmd, const char *prefix) {
+  g_at_got = false;
+  g_at_line[0] = '\0';
+  int r = ESP_NOW.command(cmd, atCapCb, nullptr);
+  return r == 0 && g_at_got && strncmp(g_at_line, prefix, strlen(prefix)) == 0;
+}
+
+void runRawATTests() {
+  Serial.println("\n--- Phase 1: raw AT protocol (positive + negative) ---");
+
+  // === Positive: well-formed commands must answer OK ===
+  check("[AT+] bare AT -> OK", atCmd("AT") == 0);
+  check("[AT+] ENVER? -> OK", atCmd("AT+ENVER?") == 0);
+  check("[AT+] ENSTATE? -> OK", atCmd("AT+ENSTATE?") == 0);
+  check("[AT+] ENSTATS? -> OK", atCmd("AT+ENSTATS?") == 0);
+  check("[AT+] ENCHANNEL? -> OK", atCmd("AT+ENCHANNEL?") == 0);
+  check("[AT+] ENFLOW? -> OK", atCmd("AT+ENFLOW?") == 0);
+  check("[AT+] ENDISCOVERABLE? -> OK", atCmd("AT+ENDISCOVERABLE?") == 0);
+  check("[AT+] CGMI -> OK", atCmd("AT+CGMI") == 0);
+  check("[AT+] CGMM -> OK", atCmd("AT+CGMM") == 0);
+  check("[AT+] CGMR -> OK", atCmd("AT+CGMR") == 0);
+
+  // Positive with response-shape capture.
+  check("[AT+] ENVER? emits +ENVER:", atCap("AT+ENVER?", "+ENVER:"));
+  check("[AT+] ENMAC? emits +ENMAC:", atCap("AT+ENMAC?", "+ENMAC:"));
+  check("[AT+] ENSTATE? emits +ENSTATE:", atCap("AT+ENSTATE?", "+ENSTATE:"));
+
+  // Positive add/delete round-trip (channel matches begin()'s; nets to 0 peers).
+  check("[AT+] ADDPEER valid -> OK", atCmd("AT+ENADDPEER=020000000041,6,0") == 0);
+  check("[AT+] LISTPEER? -> OK", atCmd("AT+ENLISTPEER?") == 0);
+  check("[AT+] DELPEER valid -> OK", atCmd("AT+ENDELPEER=020000000041") == 0);
+
+  // === Negative: malformed input must be rejected with the spec'd code ===
+
+  // -- parser / grammar --
+  check("[AT-] unknown command -> +ENERR:8", atCmd("AT+ENBOGUS") == 8);
+  check("[AT-] non-AT line -> ERROR", atCmd("HELLO") == -1);
+  check("[AT-] trailing char after '?' -> ERROR", atCmd("AT+ENVER?X") == -1);
+  check("[AT-] SET on query-only ENVER -> ERROR", atCmd("AT+ENVER=1") == -1);
+  check("[AT-] QUERY on exec-only CGMI -> ERROR", atCmd("AT+CGMI?") == -1);
+
+  // -- channel range (plain ERROR, no code) --
+  check("[AT-] ENINIT channel 0 -> ERROR", atCmd("AT+ENINIT=0") == -1);
+  check("[AT-] ENINIT channel 15 -> ERROR", atCmd("AT+ENINIT=15") == -1);
+  check("[AT-] ENCHANNEL 15 -> ERROR", atCmd("AT+ENCHANNEL=15") == -1);
+
+  // -- ADDPEER argument validation --
+  check("[AT-] ADDPEER too few args -> ERROR", atCmd("AT+ENADDPEER=020000000041,6") == -1);
+  check("[AT-] ADDPEER bad MAC -> ERROR", atCmd("AT+ENADDPEER=ZZ0000000041,6,0") == -1);
+  check("[AT-] ADDPEER short MAC -> ERROR", atCmd("AT+ENADDPEER=0200000041,6,0") == -1);
+  check("[AT-] ADDPEER encrypt>1 -> ERROR", atCmd("AT+ENADDPEER=020000000041,6,2") == -1);
+  check("[AT-] ADDPEER bad-length LMK -> +ENERR:6", atCmd("AT+ENADDPEER=020000000041,6,1,0011223344") == 6);
+
+  // -- key commands (all malformed forms -> +ENERR:6) --
+  check("[AT-] PMK short key -> +ENERR:6", atCmd("AT+ENPMK=00112233") == 6);
+  check("[AT-] PMK non-hex key -> +ENERR:6", atCmd("AT+ENPMK=GG112233445566778899AABBCCDDEEFF") == 6);
+  check("[AT-] LMK too few args -> +ENERR:6", atCmd("AT+ENLMK=020000000041") == 6);
+
+  // -- data path length / hex validation --
+  check("[AT-] SEND len 0 -> +ENERR:4", atCmd("AT+ENSEND=020000000041,0,00") == 4);
+  check("[AT-] SEND len>248 -> +ENERR:4", atCmd("AT+ENSEND=020000000041,249,AB") == 4);
+  check("[AT-] SEND hex len mismatch -> ERROR", atCmd("AT+ENSEND=020000000041,4,DEADBE") == -1);
+  check("[AT-] SEND non-hex payload -> ERROR", atCmd("AT+ENSEND=020000000041,2,ZZZZ") == -1);
+  check("[AT-] BCAST len>248 -> +ENERR:4", atCmd("AT+ENBCAST=249,AB") == 4);
+  check("[AT-] FRAGSEND len>4096 -> +ENERR:4", atCmd("AT+ENFRAGSEND=020000000041,4097,AB") == 4);
+
+  // -- discover window / misc range guards (plain ERROR) --
+  check("[AT-] DISCOVER window <50 -> ERROR", atCmd("AT+ENDISCOVER=49") == -1);
+  check("[AT-] DISCOVER window >30000 -> ERROR", atCmd("AT+ENDISCOVER=30001") == -1);
+  check("[AT-] FLOW mode>3 -> ERROR", atCmd("AT+ENFLOW=4") == -1);
+  check("[AT-] RATE index>42 -> ERROR", atCmd("AT+ENRATE=43") == -1);
+  check("[AT-] BAUD invalid value -> ERROR", atCmd("AT+ENBAUD=12345") == -1);
+}
+
 void runTests(const uint8_t *peerMac) {
   Serial.println("\n===== iLabs ESP-NOW regression suite =====");
+
+  runRawATTests();  // Phase 1: raw AT-protocol contract
+
+  Serial.println("\n--- Phase 2: library API (contract + OTA) ---");
 
   // --- Local getters -------------------------------------------------
   String mac = ESP_NOW.macAddress();
@@ -236,6 +352,44 @@ void runTests(const uint8_t *peerMac) {
   check("wasReset() is false at start", ESP_NOW.wasReset() == false);
   ESP_NOW.onReset([](void *) {}, nullptr);  // exercise the setter
   check("getTotalPeerCount() == 0 initially", ESP_NOW.getTotalPeerCount() == 0);
+
+  // --- Negative / boundary: library contract ------------------------
+  // These stay count-neutral so the assertions above/below still hold.
+  int base = ESP_NOW.getTotalPeerCount();  // 0 here
+  const uint8_t nbuf[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+  static const uint8_t NEG_MAC[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x7F};
+
+  // Zero/negative-length sends short-circuit in the library (no frame sent).
+  check("write(_, 0) returns 0", ESP_NOW.write(nbuf, 0) == 0);
+  check("begin() again is idempotent", ESP_NOW.begin(SHARED_PMK) == true);
+
+  TesterPeer *np = new TesterPeer(NEG_MAC);
+  check("send() before add() returns 0", np->send(nbuf, sizeof(nbuf)) == 0);
+  check("send(_, 0) returns 0", np->send(nbuf, 0) == 0);
+  check("send(_, -1) returns 0", np->send(nbuf, -1) == 0);
+
+  // The library does NOT validate channel client-side; the firmware must, so
+  // add() with an out-of-range channel has to fail (catches firmware drift).
+  np->setChannel(200);
+  check("add() with channel 200 -> false (firmware rejects)", np->add() == false);
+  check("failed add() consumed no peer slot", ESP_NOW.getTotalPeerCount() == base);
+  np->setChannel(ESPNOW_WIFI_CHANNEL);
+
+  // add / count / idempotency / remove accounting.
+  check("add() valid -> true", np->add());
+  check("peer count +1 after add", ESP_NOW.getTotalPeerCount() == base + 1);
+  check("add() again is idempotent (still true)", np->add());
+  check("idempotent add did not double-count", ESP_NOW.getTotalPeerCount() == base + 1);
+  check("removePeer() -> true", ESP_NOW.removePeer(*np));
+  check("peer count back to base", ESP_NOW.getTotalPeerCount() == base);
+  check("removePeer() of already-removed -> true (no-op)", ESP_NOW.removePeer(*np));
+  check("no-op removePeer left count at base", ESP_NOW.getTotalPeerCount() == base);
+  delete np;
+
+  // discover() client-side argument guards return -1 without touching the link.
+  ESP_NOW_Found ntmp[2];
+  check("discover(nullptr, ...) -> -1", ESP_NOW.discover(nullptr, 2, 100) == -1);
+  check("discover(_, 0, _) -> -1", ESP_NOW.discover(ntmp, 0, 100) == -1);
 
   // --- end() + begin(pmk) cycle -------------------------------------
   check("end() returns true", ESP_NOW.end() == true);
