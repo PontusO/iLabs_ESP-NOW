@@ -491,8 +491,15 @@ int ESP_NOW_Class::getVersion() const {
 }
 
 int ESP_NOW_Class::availableForWrite() {
-  int available = getMaxDataLen();
-  return available < 0 ? 0 : available;
+  // write() maps to a single broadcast frame (AT+ENBCAST), which carries at
+  // most ESPNOW_SINGLE_FRAME_MAX bytes and truncates above that. Report what
+  // write() will actually accept without dropping bytes - not getMaxDataLen()
+  // (250), which is the larger unicast ceiling that peer.send() reaches by
+  // fragmenting. 0 before begin().
+  if (getMaxDataLen() < 0) {
+    return 0;
+  }
+  return (int)ESPNOW_SINGLE_FRAME_MAX;
 }
 
 // Send-to-all: mapped to an ESP-NOW broadcast (AT+ENBCAST). The AT broadcast

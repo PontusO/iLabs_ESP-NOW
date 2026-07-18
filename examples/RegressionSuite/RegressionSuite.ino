@@ -348,7 +348,9 @@ void runTests(const uint8_t *peerMac) {
   check("macAddress() is 12 hex chars", mac.length() == 12);
   check("getVersion() >= 1", ESP_NOW.getVersion() >= 1);
   check("getMaxDataLen() == 250", ESP_NOW.getMaxDataLen() == 250);
-  check("availableForWrite() == 250", ESP_NOW.availableForWrite() == 250);
+  // write() is a single broadcast frame, so availableForWrite() reports the
+  // 248-byte single-frame ceiling, not the 250-byte unicast max.
+  check("availableForWrite() == 248", ESP_NOW.availableForWrite() == 248);
   check("wasReset() is false at start", ESP_NOW.wasReset() == false);
   ESP_NOW.onReset([](void *) {}, nullptr);  // exercise the setter
   check("getTotalPeerCount() == 0 initially", ESP_NOW.getTotalPeerCount() == 0);
