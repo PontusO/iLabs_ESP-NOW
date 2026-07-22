@@ -1,0 +1,19 @@
+#!/bin/bash
+
+PORT=/dev/ttyACM0
+
+if [ $1 ]; then
+	PORT=$1
+fi
+python3 ./devwait.py /media/pontus/RPI-RP2/
+if [ $? -ne 0 ]; then exit 1; fi
+echo "Flashing USB to Serial bridge firmware..."
+cp ./Challenger2040USB2Serial.ino.uf2  /media/pontus/RPI-RP2/
+python3 ./devwait.py $PORT
+if [ $? -ne 0 ]; then exit 1; fi
+echo "Flashing AT command firmware to ESP8285 chip..."
+sleep 2
+PYTHONPATH=~/bin/esptool python3 ~/bin/esptool/esptool --chip esp8266 --port $PORT --baud 921600 --after hard-reset write-flash --flash-mode dout --flash-size 2MB --flash-freq 40m 0x0 bin/bootloader.bin 0x8000 bin/partition-table.bin 0x10000 bin/esp_now_at.bin 
+if [ $? -ne 0 ]; then exit 1; fi
+echo "ESP-NOW firmware flashed OK"
+

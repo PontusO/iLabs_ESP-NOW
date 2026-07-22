@@ -1,0 +1,21 @@
+#!/bin/bash
+
+PORT=/dev/ttyACM0
+
+if [ $1 ]; then
+	PORT=$1
+fi
+
+python3 ./devwait.py /media/pontus/RP2350/
+if [ $? -ne 0 ]; then exit 1; fi
+echo "Flashing USB to Serial bridge firmware..."
+cp ./RP2350USB2Serial.ino.uf2 /media/pontus/RP2350/
+python3 ./devwait.py $PORT
+sleep 1
+if [ $? -ne 0 ]; then exit 1; fi
+echo "Flashing ESP-NOW AT command firmware to ESP32 chip..."
+sleep 2
+PYTHONPATH=~/bin/esptool python3 ~/bin/esptool/esptool --chip esp32c6 -p $PORT -b 921600 --before=default-reset --after=hard-reset write-flash --flash-mode dio --flash-freq 80m --flash-size 4MB 0x0 bin/bootloader.bin 0x8000 bin/partition-table.bin 0x10000 bin/esp_now_at.bin
+if [ $? -ne 0 ]; then echo "ESP-NOW firmware flash failed"; exit 1; fi
+echo "ESP-NOW firmware flashed OK"
+
