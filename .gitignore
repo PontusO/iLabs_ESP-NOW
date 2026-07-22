@@ -1,7 +1,6 @@
 build/
 *.elf
-*.bin
-*.uf2
 *.hex
 .DS_Store
 .vscode/
+fw/__pycache__/*
