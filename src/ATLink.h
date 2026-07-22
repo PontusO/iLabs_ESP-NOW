@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* Max accepted AT line length (bytes). Bounds the largest +ENRECV the host
  * will reassemble: "+ENRECV:" + fields + 2*payload hex + dst MAC. 640 covers
@@ -39,6 +40,41 @@
 #ifndef ILABS_ESPNOW_DEFER_MAX
 #define ILABS_ESPNOW_DEFER_MAX 8
 #endif
+
+/*
+ * Asynchronous URC prefixes: the unsolicited result codes the co-processor
+ * emits outside the command/response exchange. Single source of truth - both
+ * the transport classifier (ATLink::isAsyncURC, which decides what to route to
+ * the URC handler) and the ESP_NOW dispatcher (urc_handler) match against these
+ * exact tokens, so a new URC is added in one place and no hand-counted lengths
+ * can drift. The tokens are colon-less bases; the co-processor appends
+ * ":<fields>" to all but +ENREADY.
+ */
+#define ILABS_URC_RECV     "+ENRECV"
+#define ILABS_URC_SENDOK   "+ENSENDOK"
+#define ILABS_URC_SENDFAIL "+ENSENDFAIL"
+#define ILABS_URC_FRAGRECV "+ENFRAGRECV"
+#define ILABS_URC_READY    "+ENREADY"
+
+/* Does `s` begin with `prefix`? For a string literal, strlen() folds to a
+ * compile-time constant, so this is as cheap as a hand-counted strncmp but
+ * cannot miscount. Shared by both library layers (see ATLink.cpp / ESP32_NOW.cpp). */
+static inline bool ilabs_starts_with(const char *s, const char *prefix) {
+  return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+/* If `line` begins with "tag:", return a pointer just past the colon (the
+ * payload); otherwise nullptr. Replaces hand-counted strncmp offsets for every
+ * tagged result/URC/error line ("+ENMAC:", "+ENRECV:", "+ENERR:", ...) - the
+ * offset can't drift from the tag string. For colon-less markers (+ENREADY)
+ * use ilabs_starts_with instead. */
+static inline const char *ilabs_after_tag(const char *line, const char *tag) {
+  size_t n = strlen(tag);
+  if (strncmp(line, tag, n) == 0 && line[n] == ':') {
+    return line + n + 1;
+  }
+  return nullptr;
+}
 
 class ATLink {
 public:

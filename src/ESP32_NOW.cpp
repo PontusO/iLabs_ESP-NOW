@@ -84,6 +84,19 @@ static bool is_broadcast(const uint8_t m[6]) {
   return true;
 }
 
+// Return a pointer to the Nth (0-based) comma-separated field within `s`, or
+// nullptr if there are fewer than N+1 fields. Non-destructive: the field runs
+// to the next comma or the end of the string, and callers read only what they
+// need (atoi()/parse_mac()). Shared by the +EN...: query-result parsers below.
+static const char *field_at(const char *s, int n) {
+  for (int i = 0; i < n; i++) {
+    s = strchr(s, ',');
+    if (!s) return nullptr;
+    s++;
+  }
+  return s;
+}
+
 // Largest payload carried in a single ESP-NOW frame over the AT bridge: the
 // v1 max (250) minus the 2-byte iLabs frame header. Unicast sends above this
 // are fragmented/reassembled by the firmware; broadcast (AT+ENBCAST) has no
@@ -138,12 +151,13 @@ static int at_addpeer(const uint8_t mac[6], uint8_t chan, bool encrypt, const ui
 static void urc_handler(const char *line, void *arg) {
   (void)arg;
 
-  if (strncmp(line, "+ENRECV:", 8) == 0) {
+  const char *body = ilabs_after_tag(line, ILABS_URC_RECV);
+  if (body) {
     // src,len,rssi,payload_hex[,dst]
     char buf[ILABS_ESPNOW_LINE_MAX];
-    size_t blen = strlen(line + 8);
+    size_t blen = strlen(body);
     if (blen >= sizeof(buf)) return;  // line is already length-bounded by ATLink
-    memcpy(buf, line + 8, blen + 1);
+    memcpy(buf, body, blen + 1);
 
     char *f[5];
     int nf = 0;
@@ -191,25 +205,27 @@ static void urc_handler(const char *line, void *arg) {
     return;
   }
 
-  if (strncmp(line, "+ENSENDOK:", 10) == 0) {
+  const char *okmac = ilabs_after_tag(line, ILABS_URC_SENDOK);
+  if (okmac) {
     uint8_t m[6];
-    if (parse_mac(line + 10, m)) {
+    if (parse_mac(okmac, m)) {
       ESP_NOW_Peer *pr = find_peer(m);
       if (pr) pr->onSent(true);
     }
     return;
   }
 
-  if (strncmp(line, "+ENSENDFAIL:", 12) == 0) {
+  const char *failmac = ilabs_after_tag(line, ILABS_URC_SENDFAIL);
+  if (failmac) {
     uint8_t m[6];
-    if (parse_mac(line + 12, m)) {
+    if (parse_mac(failmac, m)) {
       ESP_NOW_Peer *pr = find_peer(m);
       if (pr) pr->onSent(false);
     }
     return;
   }
 
-  if (strncmp(line, "+ENREADY", 8) == 0) {
+  if (ilabs_starts_with(line, ILABS_URC_READY)) {
     // The co-processor rebooted mid-operation: it has lost its peers/keys.
     _link_reset_flag = true;
     if (reset_cb) {
@@ -228,9 +244,10 @@ struct MacCap {
   bool got;
 };
 static void cap_mac(const char *line, void *arg) {
-  if (strncmp(line, "+ENMAC:", 7) == 0) {
+  const char *p = ilabs_after_tag(line, "+ENMAC");
+  if (p) {
     MacCap *m = (MacCap *)arg;
-    strncpy(m->mac, line + 7, 12);
+    strncpy(m->mac, p, 12);
     m->mac[12] = '\0';
     m->got = true;
   }
@@ -241,10 +258,12 @@ struct VerCap {
   bool got;
 };
 static void cap_ver(const char *line, void *arg) {
-  if (strncmp(line, "+ENVER:", 7) == 0) {
+  const char *p = ilabs_after_tag(line, "+ENVER");
+  if (p) {
+    // +ENVER:<fw_ver>,<espnow_ver>
     VerCap *v = (VerCap *)arg;
-    const char *comma = strchr(line + 7, ',');
-    v->espnow_ver = comma ? (unsigned)atoi(comma + 1) : 0;
+    const char *ver = field_at(p, 1);
+    v->espnow_ver = ver ? (unsigned)atoi(ver) : 0;
     v->got = true;
   }
 }
@@ -256,21 +275,21 @@ struct DiscoverCap {
 };
 static void cap_discover(const char *line, void *arg) {
   // +ENDISCOVER:<mac>,<rssi>
-  if (strncmp(line, "+ENDISCOVER:", 12) != 0) {
+  const char *p = ilabs_after_tag(line, "+ENDISCOVER");
+  if (!p) {
     return;
   }
   DiscoverCap *d = (DiscoverCap *)arg;
   if (d->count >= d->max) {
     return;
   }
-  const char *p = line + 12;
   uint8_t mac[6];
   if (!parse_mac(p, mac)) {
     return;
   }
-  const char *comma = strchr(p, ',');
+  const char *rssi = field_at(p, 1);
   memcpy(d->out[d->count].mac, mac, 6);
-  d->out[d->count].rssi = comma ? atoi(comma + 1) : 0;
+  d->out[d->count].rssi = rssi ? atoi(rssi) : 0;
   d->count++;
 }
 
@@ -279,15 +298,13 @@ struct PeerCount {
   int enc;
 };
 static void cap_peercount(const char *line, void *arg) {
-  if (strncmp(line, "+ENLISTPEER:", 12) == 0) {
+  // +ENLISTPEER:<mac>,<ch>,<enc>
+  const char *p = ilabs_after_tag(line, "+ENLISTPEER");
+  if (p) {
     PeerCount *pc = (PeerCount *)arg;
     pc->total++;
-    // +ENLISTPEER:<mac>,<ch>,<enc>
-    const char *c1 = strchr(line + 12, ',');
-    if (!c1) return;
-    const char *c2 = strchr(c1 + 1, ',');
-    if (!c2) return;
-    if (atoi(c2 + 1) == 1) pc->enc++;
+    const char *enc = field_at(p, 2);
+    if (enc && atoi(enc) == 1) pc->enc++;
   }
 }
 
@@ -439,14 +456,18 @@ bool ESP_NOW_Class::end() {
   if (!_has_begun) {
     return true;
   }
+  // AT+ENDEINIT tears down every firmware peer and key in one shot, so there's
+  // no need to AT+ENDELPEER each peer first (that was up to 20 redundant
+  // round-trips). Just reset the local mirror: mark each tracked peer un-added
+  // so its object can be reused after a later begin(), and drop the table.
   for (int i = 0; i < ESP_NOW_MAX_TOTAL_PEER_NUM; i++) {
     if (_peers[i] != nullptr) {
-      removePeer(*_peers[i]);
+      _peers[i]->added = false;
+      _peers[i] = nullptr;
     }
   }
   int r = g_link.command("AT+ENDEINIT");
   _has_begun = false;
-  memset(_peers, 0, sizeof(_peers));
   return r == 0;
 }
 

@@ -23,8 +23,9 @@ void ATLink::begin(Stream &serial, uint8_t channel) {
 }
 
 bool ATLink::isAsyncURC(const char *line) {
-  return strncmp(line, "+ENRECV", 7) == 0 || strncmp(line, "+ENSENDOK", 9) == 0 || strncmp(line, "+ENSENDFAIL", 11) == 0
-         || strncmp(line, "+ENFRAGRECV", 11) == 0 || strncmp(line, "+ENREADY", 8) == 0;
+  return ilabs_starts_with(line, ILABS_URC_RECV) || ilabs_starts_with(line, ILABS_URC_SENDOK)
+         || ilabs_starts_with(line, ILABS_URC_SENDFAIL) || ilabs_starts_with(line, ILABS_URC_FRAGRECV)
+         || ilabs_starts_with(line, ILABS_URC_READY);
 }
 
 /*
@@ -111,8 +112,9 @@ int ATLink::runCommand(const char *cmd, LineCb onLine, void *arg, uint32_t timeo
     if (strcmp(line, "ERROR") == 0) {
       return pending_enerr > 0 ? pending_enerr : -1;
     }
-    if (strncmp(line, "+ENERR:", 7) == 0) {
-      pending_enerr = atoi(line + 7);
+    const char *enerr = ilabs_after_tag(line, "+ENERR");
+    if (enerr) {
+      pending_enerr = atoi(enerr);
       continue;
     }
     if (isAsyncURC(line)) {
@@ -197,7 +199,7 @@ bool ATLink::waitReady(uint32_t timeout_ms) {
       return false;
     }
     const char *line = readLine(timeout_ms - elapsed);
-    if (line && strncmp(line, "+ENREADY", 8) == 0) {
+    if (line && ilabs_starts_with(line, ILABS_URC_READY)) {
       return true;
     }
     // discard boot ROM chatter / stray lines and keep waiting
