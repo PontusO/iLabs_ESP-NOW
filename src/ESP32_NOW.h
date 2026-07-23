@@ -170,11 +170,11 @@ public:
   operator bool() const;
 
   //optional callbacks to be implemented by the upper class
-  virtual void onReceive(const uint8_t *data, size_t len, bool broadcast) {
+  virtual void onReceive([[maybe_unused]] const uint8_t *data, [[maybe_unused]] size_t len, [[maybe_unused]] bool broadcast) {
     log_i("Received %lu bytes from " MACSTR " %s", (unsigned long)len, MAC2STR(mac), broadcast ? "(broadcast)" : "");
   }
 
-  virtual void onSent(bool success) {
+  virtual void onSent([[maybe_unused]] bool success) {
     log_i("Message transmission to peer " MACSTR " %s", MAC2STR(mac), success ? "successful" : "failed");
   }
 
