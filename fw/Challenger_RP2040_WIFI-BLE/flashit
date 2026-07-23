@@ -10,7 +10,7 @@ python3 ./devwait.py /media/pontus/RPI-RP2/
 if [ $? -ne 0 ]; then exit 1; fi
 sleep 0.5
 echo "Flashing USB to Serial bridge firmware..."
-cp ./Challenger2040USB2Serial.ino.uf2  /media/pontus/RPI-RP2/
+cp ./RP2040USB2Serial.ino.uf2  /media/pontus/RPI-RP2/
 sleep 0.5
 python3 ./devwait.py $PORT
 if [ $? -ne 0 ]; then exit 1; fi
