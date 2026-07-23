@@ -1,0 +1,45 @@
+# Compile every example against the arduino-pico core with the same strict
+# warning flags that arduino-pico's own CI uses (-Wall -Wextra -Werror ...),
+# so warnings are caught here in the library repo instead of downstream in an
+# arduino-pico pull request.
+#
+# The examples need ESP_SERIAL_PORT, which real iLabs board variants define but
+# a generic rpipico/rpipico2 does not, so it is stubbed to Serial1 for the
+# compile (the same stub arduino-pico's .ci.defines uses). No behavior is run;
+# this is a compile-only check.
+name: Compile Examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile:
+    name: ${{ matrix.fqbn }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fqbn:
+          - rp2040:rp2040:rpipico
+          - rp2040:rp2040:rpipico2:arch=arm
+          - rp2040:rp2040:rpipico2:arch=riscv
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile examples
+        uses: arduino/compile-sketches@v1
+        with:
+          platforms: |
+            - source-url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+              name: rp2040:rp2040
+          fqbn: ${{ matrix.fqbn }}
+          sketch-paths: |
+            - ./examples
+          # Mirror arduino-pico's CI warning set (tests/common.sh) and supply the
+          # ESP_SERIAL_PORT stub so the examples build on a generic board.
+          cli-compile-flags: |
+            - --build-property
+            - compiler.cpp.extra_flags=-DESP_SERIAL_PORT=Serial1 -Wall -Wextra -Werror -Wdouble-promotion -Wno-ignored-qualifiers -Wno-overloaded-virtual
